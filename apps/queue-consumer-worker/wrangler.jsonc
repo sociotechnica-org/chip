@@ -23,6 +23,10 @@
     "head_sampling_rate": 1
   },
   "vars": {
-    "LOCAL_QUEUE_SHARED_SECRET": ""
+    "LOCAL_QUEUE_SHARED_SECRET": "",
+    "CODERUNNER_MODE": "mock",
+    "MODAL_TOKEN_ID": "",
+    "MODAL_TOKEN_SECRET": "",
+    "CLAUDE_CODE_API_KEY": ""
   }
 }

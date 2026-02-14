@@ -19,6 +19,7 @@ Expected v0 secret variables:
 
 - `BOB_PASSWORD`
 - `GITHUB_TOKEN`
+- `CODERUNNER_MODE` (`mock` or `modal`; mock is default)
 - `MODAL_TOKEN_ID`
 - `MODAL_TOKEN_SECRET`
 - `CLAUDE_CODE_API_KEY`

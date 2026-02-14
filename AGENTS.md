@@ -85,6 +85,22 @@ Keep security logic isolated in `packages/security` to simplify replacement late
 3. One local end-to-end path executes: submit run -> queue -> workflow -> implement -> verify -> PR.
 4. Documentation is updated when contracts/shape change.
 
+## Development Loop (Required)
+
+For implementation-plan execution work, use this loop until completion:
+
+1. Read the target plan doc and implement all acceptance criteria (not a subset).
+2. Update contracts, migrations, adapters, worker wiring, and docs together so behavior is coherent.
+3. Add/extend unit + integration coverage; add smoke/e2e coverage when station behavior changes.
+4. Run quality gates locally:
+   - `pnpm lint:check`
+   - `pnpm test`
+   - relevant smoke/e2e commands for touched surfaces
+5. Run local QA of the affected flow (API + queue + station artifacts/state validation).
+6. Open/update a PR from the working branch and ensure CI checks pass.
+7. Resolve all review feedback and BugBot comments; BugBot must be `pass` (not `neutral`).
+8. Repeat steps 2-7 until all checks are green and plan criteria are fully satisfied.
+
 ## Non-Goals (for v0)
 
 1. Multi-repo rollout beyond `sociotechnica-org/lifebuild`.

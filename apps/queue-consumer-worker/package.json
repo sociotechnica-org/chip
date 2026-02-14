@@ -14,6 +14,7 @@
     "test:integration": "vitest run test/smoke.integration.test.ts"
   },
   "dependencies": {
+    "@bob/adapters-coderunner": "workspace:*",
     "@bob/core": "workspace:*"
   }
 }

@@ -98,6 +98,18 @@ PR3 adds the first asynchronous execution loop:
 - run and station execution state are persisted to D1
 - `GET /v1/runs/:id` now returns `run`, `stations`, and artifact summaries
 
+## PR4 Adapter Execution Status
+
+PR4 replaces placeholder station bodies with adapter-driven execution:
+
+- `@bob/adapters-modal` provides typed submit/status/result transport primitives
+- `@bob/adapters-coderunner` provides mock + modal Claude runner modes
+- queue-consumer `implement` and `verify` stations now persist:
+  - `external_ref` + `metadata_json` in `station_executions`
+  - `implement_summary` / `verify_summary` artifacts
+  - bounded `*_runner_logs_excerpt` artifacts
+- stale running runs resume externalized station work by polling existing `external_ref`
+
 ## Getting Started
 
 Brand new local instance:
@@ -126,6 +138,16 @@ For reliable local end-to-end queue execution during `pnpm dev`, configure:
   - `LOCAL_QUEUE_SHARED_SECRET=...`
 - `apps/queue-consumer-worker/.dev.vars`:
   - `LOCAL_QUEUE_SHARED_SECRET=...` (must match control worker)
+  - `CODERUNNER_MODE=mock` (default; CI-safe)
+  - `CLAUDE_CODE_API_KEY=...` (required when `CODERUNNER_MODE=modal`)
+  - `MODAL_TOKEN_ID=...` (required when `CODERUNNER_MODE=modal`)
+  - `MODAL_TOKEN_SECRET=...` (required when `CODERUNNER_MODE=modal`)
+
+For real adapter QA, switch queue-consumer to modal mode:
+
+```bash
+export CODERUNNER_MODE=modal
+```
 
 Reset local runtime state and rebuild a fresh local instance:
 

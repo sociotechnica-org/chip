@@ -1,3 +1,3 @@
-BOB_PASSWORD=replace-me
+BOB_PASSWORD=change-me
 LOCAL_QUEUE_CONSUMER_URL=http://127.0.0.1:20288
-LOCAL_QUEUE_SHARED_SECRET=replace-me-local-queue-secret
+LOCAL_QUEUE_SHARED_SECRET=change-me

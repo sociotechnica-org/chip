@@ -70,6 +70,9 @@ importers:
 
   apps/queue-consumer-worker:
     dependencies:
+      "@bob/adapters-coderunner":
+        specifier: workspace:*
+        version: link:../../packages/adapters-coderunner
       "@bob/core":
         specifier: workspace:*
         version: link:../../packages/core
@@ -99,11 +102,22 @@ importers:
         specifier: ^6.2.1
         version: 6.4.1(@types/node@22.19.10)
 
-  packages/adapters-coderunner: {}
+  packages/adapters-coderunner:
+    dependencies:
+      "@bob/adapters-modal":
+        specifier: workspace:*
+        version: link:../adapters-modal
+      "@bob/core":
+        specifier: workspace:*
+        version: link:../core
 
   packages/adapters-github: {}
 
-  packages/adapters-modal: {}
+  packages/adapters-modal:
+    dependencies:
+      "@bob/core":
+        specifier: workspace:*
+        version: link:../core
 
   packages/config: {}
 
