@@ -103,7 +103,7 @@ function shouldMockFail(goal: string | null, marker: string): boolean {
   return goal?.toLowerCase().includes(marker) ?? false;
 }
 
-function parseMockOutcome(goal: string | null): ExecutionOutcome {
+function parseMockOutcome(phase: ExecutionPhase, goal: string | null): ExecutionOutcome {
   if (shouldMockFail(goal, "[mock-timeout]")) {
     return "timeout";
   }
@@ -112,7 +112,11 @@ function parseMockOutcome(goal: string | null): ExecutionOutcome {
     return "canceled";
   }
 
-  if (shouldMockFail(goal, "[mock-fail]") || shouldMockFail(goal, "[verify-fail]")) {
+  if (shouldMockFail(goal, "[mock-fail]")) {
+    return "failed";
+  }
+
+  if (phase === "verify" && shouldMockFail(goal, "[verify-fail]")) {
     return "failed";
   }
 
@@ -301,7 +305,7 @@ class ClaudeCodeRunner implements CoderunnerAdapter {
   }
 
   private runMockTask(phase: ExecutionPhase, input: CoderunnerTaskInput): StationExecutionResponse {
-    const outcome = parseMockOutcome(input.goal);
+    const outcome = parseMockOutcome(phase, input.goal);
     const summaryPrefix = phase === "implement" ? "Implement" : "Verify";
     const summary =
       outcome === "succeeded"

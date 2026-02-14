@@ -70,6 +70,22 @@ describe("coderunner adapter", () => {
     expect(result.summary).toContain("failed");
   });
 
+  it("keeps verify-specific failure markers scoped to verify phase", async () => {
+    const adapter = createCoderunnerAdapter({
+      mode: "mock"
+    });
+
+    const implementResult = await adapter.runImplementTask(
+      createTaskInput({ goal: "[verify-fail] only verify should fail" })
+    );
+    const verifyResult = await adapter.runVerifyTask(
+      createTaskInput({ goal: "[verify-fail] only verify should fail" })
+    );
+
+    expect(implementResult.outcome).toBe("succeeded");
+    expect(verifyResult.outcome).toBe("failed");
+  });
+
   it("maps modal terminal outcomes", async () => {
     const { transport, submitJob, getJobResult } = createTransport();
     submitJob.mockResolvedValue({

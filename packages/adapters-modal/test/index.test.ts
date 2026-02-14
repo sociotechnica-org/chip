@@ -76,8 +76,8 @@ describe("Http modal transport", () => {
     expect(init?.method).toBe("POST");
 
     const headers = new Headers(init?.headers);
-    expect(headers.get("x-modal-token-id")).toBe("token-id");
-    expect(headers.get("x-modal-token-secret")).toBe("token-secret");
+    expect(headers.get("Modal-Key")).toBe("token-id");
+    expect(headers.get("Modal-Secret")).toBe("token-secret");
     expect(headers.get("content-type")).toBe("application/json");
   });
 

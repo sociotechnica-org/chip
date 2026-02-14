@@ -1,6 +1,5 @@
 import {
   isModalJobStatus,
-  type ExecutionPhase,
   type ModalExecutionHandle,
   type ModalExecutionTransport,
   type ModalJobResult,
@@ -312,8 +311,8 @@ class HttpModalExecutionTransport implements ModalExecutionTransport {
     const headers = new Headers(extra ?? undefined);
     headers.set("accept", "application/json");
     headers.set("content-type", "application/json");
-    headers.set("x-modal-token-id", this.auth.tokenId);
-    headers.set("x-modal-token-secret", this.auth.tokenSecret);
+    headers.set("Modal-Key", this.auth.tokenId);
+    headers.set("Modal-Secret", this.auth.tokenSecret);
     return headers;
   }
 
@@ -382,12 +381,4 @@ export function createModalExecutionTransportFromEnv(
     auth,
     fetchFn: options.fetchFn
   });
-}
-
-export function buildCoderunnerCommand(phase: ExecutionPhase, goal: string | null): string {
-  if (phase === "implement") {
-    return goal ? `implement: ${goal}` : "implement";
-  }
-
-  return "verify";
 }
