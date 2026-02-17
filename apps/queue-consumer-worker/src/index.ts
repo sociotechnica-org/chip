@@ -66,7 +66,7 @@ const LOCAL_QUEUE_CONSUME_PATH = "/__queue/consume";
 const LOCAL_QUEUE_SECRET_HEADER = "x-bob-local-queue-secret";
 const RUNNER_LOG_EXCERPT_LIMIT = 4_000;
 const STATION_SUMMARY_LIMIT = 500;
-const IN_PROGRESS_RETRY_DELAY_SECONDS = 15;
+const IN_PROGRESS_RETRY_DELAY_SECONDS = Math.ceil(RUN_RESUME_STALE_MS / 1_000);
 
 class RetryableStationExecutionError extends Error {
   public readonly station: StationName;
