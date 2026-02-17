@@ -12,7 +12,7 @@ Replace PR3 placeholder execution behavior with real execution adapters while pr
 Concretely:
 
 1. Implement `@bob/adapters-sprites` as the execution transport layer.
-2. Implement `@bob/adapters-coderunner` with a Claude Code runner contract.
+2. Implement `@bob/adapters-coderunner` with an OpenCode runner contract.
 3. Wire queue-consumer `implement` and `verify` stations to the adapters.
 4. Persist actionable artifacts and logs from real execution.
 5. Keep system idempotent and recoverable under queue redelivery and worker restarts.
@@ -55,7 +55,7 @@ For `POST /v1/runs`:
 
 1. Run is enqueued and consumed as today.
 2. `intake` and `plan` still produce lightweight artifacts.
-3. `implement` uses adapters to execute Claude Code task in Sprites-backed runtime.
+3. `implement` uses adapters to execute OpenCode task in Sprites-backed runtime.
 4. `verify` executes configured checks using the same runtime contract.
 5. Run ends `succeeded` only if both `implement` and `verify` are successful.
 6. `GET /v1/runs/:id` returns station timeline and execution artifacts that are meaningful for operators.
@@ -96,6 +96,19 @@ Define contracts before implementation:
    - return structured status + summaries + optional logs reference
 
 Queue-consumer should depend on interfaces, not on concrete adapter construction details.
+
+## 6.3 Ramp-Informed Execution Patterns
+
+Carry these patterns into the OpenCode-based execution path:
+
+1. Treat `external_ref` as a durable background session identifier and resume/poll before submitting new work.
+2. Keep two output layers:
+   - compact operator summaries for run/station dashboards
+   - detailed execution logs/checkpoints for replay and incident debugging
+3. Enforce behavior through runtime hooks/plugins rather than prompt-only conventions:
+   - tool policy and allow/deny controls
+   - structured lifecycle events for observability and retries
+4. Preserve human-in-the-loop transitions (pause/resume/escalate) without discarding session context.
 
 ## 7. Data Model Changes
 
@@ -160,7 +173,7 @@ Non-goal in PR4:
 
 Implement:
 
-1. `ClaudeCodeRunner` using Sprites transport dependency injection.
+1. `OpenCodeRunner` using Sprites transport dependency injection.
 2. `runImplementTask(input)` and `runVerifyTask(input)` returning `StationExecutionResult`.
 3. Standardized summary fields for DB and artifact writing.
 
@@ -225,10 +238,11 @@ Add/standardize worker env vars:
 
 1. `SPRITE_TOKEN`
 2. `SPRITE_NAME`
-3. `CLAUDE_CODE_API_KEY`
-4. `CODERUNNER_MODE` (`mock` default for local tests)
-5. `SPRITES_API_BASE_URL` (optional)
-6. `SPRITES_TIMEOUT_MS` (optional)
+3. `OPENCODE_MODEL`
+4. Provider credential env var(s) referenced by OpenCode config (for example `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`)
+5. `CODERUNNER_MODE` (`mock` default for local tests)
+6. `SPRITES_API_BASE_URL` (optional)
+7. `SPRITES_TIMEOUT_MS` (optional)
 
 Update:
 
@@ -276,7 +290,7 @@ No external Sprites dependency in CI. CI should stay deterministic with mock ada
 
 ### Real Mode (pre-PR5 confidence path)
 
-1. Set Sprites and Claude credentials in local env.
+1. Set Sprites and OpenCode credentials in local env.
 2. Set `CODERUNNER_MODE=sprites`.
 3. Run same API flow.
 4. Verify station metadata includes external refs and logs are captured.
@@ -307,7 +321,7 @@ No external Sprites dependency in CI. CI should stay deterministic with mock ada
 
 1. Milestone A: Contracts + migrations + adapter scaffolds with tests.
 2. Milestone B: Sprites adapter concrete transport and tests.
-3. Milestone C: Claude runner adapter and queue-consumer station integration.
+3. Milestone C: OpenCode runner adapter and queue-consumer station integration.
 4. Milestone D: Resume/idempotency hardening + smoke QA docs.
 
 ## 18. Handoff to PR5
