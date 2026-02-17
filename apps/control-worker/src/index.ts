@@ -11,6 +11,9 @@ const MAX_LIST_LIMIT = 100;
 const TEXT_ENCODER = new TextEncoder();
 const LOCAL_QUEUE_CONSUME_PATH = "/__queue/consume";
 const LOCAL_QUEUE_SECRET_HEADER = "x-bob-local-queue-secret";
+const LOCAL_QUEUE_BRIDGE_MAX_RETRIES = 100;
+const LOCAL_QUEUE_BRIDGE_DEFAULT_RETRY_DELAY_SECONDS = 30;
+const LOCAL_QUEUE_BRIDGE_MAX_RETRY_DELAY_SECONDS = 300;
 
 type IdempotencyStatus = "pending" | "succeeded" | "failed";
 
@@ -102,6 +105,10 @@ interface CreateRunInput {
 
 function json(status: number, body: unknown): Response {
   return Response.json(body, { status });
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function badRequest(message: string): Response {
@@ -781,7 +788,9 @@ function buildQueueMessage(run: RunWithRepoRow): RunQueueMessage {
 async function dispatchLocalQueueMessageBestEffort(
   env: Env,
   run: RunWithRepoRow,
-  message: RunQueueMessage
+  message: RunQueueMessage,
+  ctx: ExecutionContext | undefined,
+  attempt = 1
 ): Promise<void> {
   const rawConsumerUrl = env.LOCAL_QUEUE_CONSUMER_URL;
   if (!isNonEmptyString(rawConsumerUrl)) {
@@ -809,16 +818,56 @@ async function dispatchLocalQueueMessageBestEffort(
     logEvent("run.local_queue_bridge.error", {
       runId: run.id,
       endpoint,
+      attempt,
       error: errorMessage(error)
     });
     return;
   }
 
+  const body = (await response.text()).slice(0, 500);
   if (!response.ok) {
-    const body = (await response.text()).slice(0, 500);
+    const retry = parseLocalQueueRetryResponse(body);
+    if (retry) {
+      if (attempt >= LOCAL_QUEUE_BRIDGE_MAX_RETRIES) {
+        logEvent("run.local_queue_bridge.retry_exhausted", {
+          runId: run.id,
+          endpoint,
+          attempts: attempt
+        });
+        return;
+      }
+      if (!ctx) {
+        logEvent("run.local_queue_bridge.retry_dropped_no_context", {
+          runId: run.id,
+          endpoint,
+          attempt
+        });
+        return;
+      }
+
+      const nextAttempt = attempt + 1;
+      const delaySeconds = retry.delaySeconds;
+      logEvent("run.local_queue_bridge.retry_scheduled", {
+        runId: run.id,
+        endpoint,
+        attempt,
+        nextAttempt,
+        delaySeconds
+      });
+
+      ctx.waitUntil(
+        (async () => {
+          await sleep(delaySeconds * 1_000);
+          await dispatchLocalQueueMessageBestEffort(env, run, message, ctx, nextAttempt);
+        })()
+      );
+      return;
+    }
+
     logEvent("run.local_queue_bridge.failed", {
       runId: run.id,
       endpoint,
+      attempt,
       status: response.status,
       body
     });
@@ -827,15 +876,43 @@ async function dispatchLocalQueueMessageBestEffort(
 
   logEvent("run.local_queue_bridge.dispatched", {
     runId: run.id,
-    endpoint
+    endpoint,
+    attempt
   });
 }
 
-async function enqueueRun(env: Env, run: RunWithRepoRow): Promise<void> {
+function parseLocalQueueRetryResponse(body: string): { delaySeconds: number } | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+
+  if (!isObject(parsed) || parsed.outcome !== "retry") {
+    return null;
+  }
+
+  const rawDelay = parsed.delaySeconds;
+  if (typeof rawDelay === "number" && Number.isFinite(rawDelay)) {
+    const rounded = Math.floor(rawDelay);
+    if (rounded >= 1) {
+      return {
+        delaySeconds: Math.min(rounded, LOCAL_QUEUE_BRIDGE_MAX_RETRY_DELAY_SECONDS)
+      };
+    }
+  }
+
+  return {
+    delaySeconds: LOCAL_QUEUE_BRIDGE_DEFAULT_RETRY_DELAY_SECONDS
+  };
+}
+
+async function enqueueRun(env: Env, run: RunWithRepoRow, ctx?: ExecutionContext): Promise<void> {
   const message = buildQueueMessage(run);
   // The durable queue is the source of truth; local bridge is best-effort for local dev wiring.
   await env.RUN_QUEUE.send(message);
-  await dispatchLocalQueueMessageBestEffort(env, run, message);
+  await dispatchLocalQueueMessageBestEffort(env, run, message, ctx);
 }
 
 function serializeIdempotency(
@@ -899,7 +976,12 @@ async function deleteRunOrServerError(
   }
 }
 
-async function replayExistingRun(env: Env, key: string, requestHash: string): Promise<Response> {
+async function replayExistingRun(
+  env: Env,
+  key: string,
+  requestHash: string,
+  ctx?: ExecutionContext
+): Promise<Response> {
   const existingKey = await getIdempotencyRow(env, key);
   if (!existingKey) {
     return serverError("Failed to load idempotency record");
@@ -932,7 +1014,7 @@ async function replayExistingRun(env: Env, key: string, requestHash: string): Pr
     }
 
     try {
-      await enqueueRun(env, run);
+      await enqueueRun(env, run, ctx);
     } catch (error) {
       return buildEnqueueFailureResponse({
         env,
@@ -1020,7 +1102,11 @@ async function handleListRepos(env: Env): Promise<Response> {
   }
 }
 
-async function handleCreateRun(request: Request, env: Env): Promise<Response> {
+async function handleCreateRun(
+  request: Request,
+  env: Env,
+  ctx?: ExecutionContext
+): Promise<Response> {
   const idempotencyKey = request.headers.get(IDEMPOTENCY_KEY_HEADER)?.trim();
   if (!idempotencyKey) {
     return badRequest("Idempotency-Key header is required");
@@ -1040,7 +1126,7 @@ async function handleCreateRun(request: Request, env: Env): Promise<Response> {
 
   const existing = await getIdempotencyRow(env, idempotencyKey);
   if (existing) {
-    return replayExistingRun(env, idempotencyKey, requestHash);
+    return replayExistingRun(env, idempotencyKey, requestHash, ctx);
   }
 
   const repo = await getRepoByOwnerName(env, validation.value.repoOwner, validation.value.repoName);
@@ -1141,11 +1227,11 @@ async function handleCreateRun(request: Request, env: Env): Promise<Response> {
     if (cleanupError) {
       return cleanupError;
     }
-    return replayExistingRun(env, idempotencyKey, requestHash);
+    return replayExistingRun(env, idempotencyKey, requestHash, ctx);
   }
 
   try {
-    await enqueueRun(env, run);
+    await enqueueRun(env, run, ctx);
   } catch (error) {
     return buildEnqueueFailureResponse({
       env,
@@ -1233,7 +1319,11 @@ async function handleGetRun(runId: string, env: Env): Promise<Response> {
   }
 }
 
-export async function handleRequest(request: Request, env: Env): Promise<Response> {
+export async function handleRequest(
+  request: Request,
+  env: Env,
+  ctx?: ExecutionContext
+): Promise<Response> {
   const url = new URL(request.url);
   const method = request.method.toUpperCase();
 
@@ -1274,7 +1364,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
   }
 
   if (method === "POST" && url.pathname === "/v1/runs") {
-    return handleCreateRun(request, env);
+    return handleCreateRun(request, env, ctx);
   }
 
   if (method === "GET" && url.pathname === "/v1/runs") {
@@ -1292,5 +1382,5 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 }
 
 export default {
-  fetch: handleRequest
+  fetch: (request: Request, env: Env, ctx: ExecutionContext) => handleRequest(request, env, ctx)
 } satisfies ExportedHandler<Env>;

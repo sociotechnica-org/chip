@@ -19,9 +19,11 @@ Expected v0 secret variables:
 
 - `BOB_PASSWORD`
 - `GITHUB_TOKEN`
-- `CODERUNNER_MODE` (`mock` or `modal`; mock is default)
-- `MODAL_TOKEN_ID`
-- `MODAL_TOKEN_SECRET`
+- `CODERUNNER_MODE` (`mock` or `sprites`; mock is default)
+- `SPRITE_TOKEN`
+- `SPRITE_NAME`
+- `SPRITES_API_BASE_URL`
+- `SPRITES_TIMEOUT_MS`
 - `CLAUDE_CODE_API_KEY`
 
 ## Control Worker D1 + Queue (PR2)

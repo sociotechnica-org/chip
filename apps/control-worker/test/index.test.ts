@@ -987,6 +987,72 @@ describe("control worker", () => {
     }
   });
 
+  it("schedules local queue bridge retries when consumer asks for retry", async () => {
+    const { env, queue } = createEnv();
+    await createRepo(env);
+    env.LOCAL_QUEUE_CONSUMER_URL = "http://127.0.0.1:20288";
+    env.LOCAL_QUEUE_SHARED_SECRET = "bridge-secret";
+    const waitUntilPromises: Promise<unknown>[] = [];
+    const mockExecutionContext = {
+      waitUntil(promise: Promise<unknown>) {
+        waitUntilPromises.push(promise);
+      }
+    } as unknown as ExecutionContext;
+
+    vi.useFakeTimers();
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: false, outcome: "retry" }), {
+          status: 503,
+          headers: {
+            "content-type": "application/json"
+          }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true, outcome: "ack" }), {
+          status: 202,
+          headers: {
+            "content-type": "application/json"
+          }
+        })
+      );
+
+    try {
+      const runBody = JSON.stringify({
+        repo: { owner: "sociotechnica-org", name: "lifebuild" },
+        issue: { number: 334 },
+        requestor: "jess",
+        prMode: "draft"
+      });
+
+      const createResponse = await handleRequest(
+        new Request("https://example.com/v1/runs", {
+          method: "POST",
+          headers: authHeaders({
+            "content-type": "application/json",
+            "idempotency-key": "local-bridge-retry"
+          }),
+          body: runBody
+        }),
+        env,
+        mockExecutionContext
+      );
+
+      expect(createResponse.status).toBe(202);
+      expect(queue.messages).toHaveLength(1);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      await Promise.allSettled(waitUntilPromises);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      fetchSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it("retries queue publish when failed idempotency update throws after enqueue error", async () => {
     const { env, db, queue } = createEnv();
     await createRepo(env);

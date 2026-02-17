@@ -32,7 +32,7 @@ export const EXECUTION_OUTCOMES = ["succeeded", "failed", "canceled", "timeout"]
 
 export type ExecutionOutcome = (typeof EXECUTION_OUTCOMES)[number];
 
-export const MODAL_JOB_STATUSES = [
+export const SPRITES_JOB_STATUSES = [
   "queued",
   "running",
   "succeeded",
@@ -41,9 +41,9 @@ export const MODAL_JOB_STATUSES = [
   "timeout"
 ] as const;
 
-export type ModalJobStatus = (typeof MODAL_JOB_STATUSES)[number];
+export type SpritesJobStatus = (typeof SPRITES_JOB_STATUSES)[number];
 
-export const CODERUNNER_MODES = ["mock", "modal"] as const;
+export const CODERUNNER_MODES = ["mock", "sprites"] as const;
 
 export type CoderunnerMode = (typeof CODERUNNER_MODES)[number];
 
@@ -70,7 +70,7 @@ export interface StationExecutionInProgress {
 
 export type StationExecutionResponse = StationExecutionResult | StationExecutionInProgress;
 
-export interface ModalSubmitJobInput {
+export interface SpritesSubmitJobInput {
   phase: ExecutionPhase;
   runId: string;
   command: string;
@@ -78,30 +78,32 @@ export interface ModalSubmitJobInput {
   metadata?: Record<string, unknown>;
 }
 
-export interface ModalExecutionHandle {
+export interface SpritesExecutionHandle {
   externalRef: string;
-  status: ModalJobStatus;
+  status: SpritesJobStatus;
+  summary?: string;
+  logsInline?: string;
   metadata?: Record<string, unknown>;
 }
 
-export interface ModalJobStatusResult {
+export interface SpritesJobStatusResult {
   externalRef: string;
-  status: ModalJobStatus;
+  status: SpritesJobStatus;
   metadata?: Record<string, unknown>;
 }
 
-export interface ModalJobResult {
+export interface SpritesJobResult {
   externalRef: string;
-  status: ModalJobStatus;
+  status: SpritesJobStatus;
   summary: string;
   logsInline?: string;
   metadata?: Record<string, unknown>;
 }
 
-export interface ModalExecutionTransport {
-  submitJob(input: ModalSubmitJobInput): Promise<ModalExecutionHandle>;
-  getJobStatus(externalRef: string): Promise<ModalJobStatusResult>;
-  getJobResult(externalRef: string): Promise<ModalJobResult>;
+export interface SpritesExecutionTransport {
+  submitJob(input: SpritesSubmitJobInput): Promise<SpritesExecutionHandle>;
+  getJobStatus(externalRef: string): Promise<SpritesJobStatusResult>;
+  getJobResult(externalRef: string): Promise<SpritesJobResult>;
 }
 
 export interface CoderunnerResumeInput {
@@ -196,15 +198,15 @@ export function isExecutionOutcome(value: string): value is ExecutionOutcome {
   return EXECUTION_OUTCOMES.includes(value as ExecutionOutcome);
 }
 
-export function isModalJobStatus(value: string): value is ModalJobStatus {
-  return MODAL_JOB_STATUSES.includes(value as ModalJobStatus);
+export function isSpritesJobStatus(value: string): value is SpritesJobStatus {
+  return SPRITES_JOB_STATUSES.includes(value as SpritesJobStatus);
 }
 
 export function isCoderunnerMode(value: string): value is CoderunnerMode {
   return CODERUNNER_MODES.includes(value as CoderunnerMode);
 }
 
-export function isTerminalModalJobStatus(status: ModalJobStatus): boolean {
+export function isTerminalSpritesJobStatus(status: SpritesJobStatus): boolean {
   return status !== "queued" && status !== "running";
 }
 

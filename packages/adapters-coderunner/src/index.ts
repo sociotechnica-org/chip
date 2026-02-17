@@ -1,33 +1,35 @@
 import {
   isCoderunnerMode,
-  isTerminalModalJobStatus,
+  isTerminalSpritesJobStatus,
   type CoderunnerAdapter,
   type CoderunnerMode,
   type CoderunnerTaskInput,
   type ExecutionOutcome,
   type ExecutionPhase,
-  type ModalExecutionTransport,
-  type ModalJobResult,
-  type ModalJobStatus,
-  type ModalJobStatusResult,
+  type SpritesExecutionTransport,
+  type SpritesJobResult,
+  type SpritesJobStatus,
   type StationExecutionMetadata,
   type StationExecutionResponse
 } from "@bob/core";
-import { createModalExecutionTransportFromEnv, isRetryableModalError } from "@bob/adapters-modal";
+import {
+  createSpritesExecutionTransportFromEnv,
+  isRetryableSpritesError
+} from "@bob/adapters-sprites";
 
 export interface CoderunnerEnv {
   CODERUNNER_MODE?: string;
   CLAUDE_CODE_API_KEY?: string;
-  MODAL_TOKEN_ID?: string;
-  MODAL_TOKEN_SECRET?: string;
-  MODAL_API_BASE_URL?: string;
-  MODAL_TIMEOUT_MS?: string;
+  SPRITE_TOKEN?: string;
+  SPRITE_NAME?: string;
+  SPRITES_API_BASE_URL?: string;
+  SPRITES_TIMEOUT_MS?: string;
 }
 
 export interface CreateCoderunnerAdapterInput {
   mode: CoderunnerMode;
   claudeCodeApiKey?: string;
-  modalTransport?: ModalExecutionTransport;
+  spritesTransport?: SpritesExecutionTransport;
   nowIso?: () => string;
 }
 
@@ -82,7 +84,7 @@ function requireApiKey(mode: CoderunnerMode, rawApiKey: string | undefined): str
   return apiKey;
 }
 
-function mapModalStatusToOutcome(status: ModalJobStatus): ExecutionOutcome {
+function mapSpritesStatusToOutcome(status: SpritesJobStatus): ExecutionOutcome {
   if (status === "succeeded") {
     return "succeeded";
   }
@@ -124,13 +126,13 @@ function parseMockOutcome(phase: ExecutionPhase, goal: string | null): Execution
 
 class ClaudeCodeRunner implements CoderunnerAdapter {
   private readonly mode: CoderunnerMode;
-  private readonly transport: ModalExecutionTransport | null;
+  private readonly transport: SpritesExecutionTransport | null;
   private readonly claudeCodeApiKey: string | null;
   private readonly nowIso: () => string;
 
   public constructor(input: CreateCoderunnerAdapterInput) {
     this.mode = input.mode;
-    this.transport = input.modalTransport ?? null;
+    this.transport = input.spritesTransport ?? null;
     this.claudeCodeApiKey = input.claudeCodeApiKey?.trim() || null;
     this.nowIso = input.nowIso ?? nowIso;
   }
@@ -153,7 +155,7 @@ class ClaudeCodeRunner implements CoderunnerAdapter {
 
     if (!this.transport) {
       throw new CoderunnerError({
-        message: "Modal transport is required for modal coderunner mode",
+        message: "Sprites transport is required for sprites coderunner mode",
         retryable: false,
         code: "config"
       });
@@ -161,26 +163,22 @@ class ClaudeCodeRunner implements CoderunnerAdapter {
 
     if (!this.claudeCodeApiKey) {
       throw new CoderunnerError({
-        message: "CLAUDE_CODE_API_KEY is required for modal coderunner mode",
+        message: "CLAUDE_CODE_API_KEY is required for sprites coderunner mode",
         retryable: false,
         code: "config"
       });
     }
 
     try {
-      if (input.resume?.externalRef) {
-        return await this.resumeModalTask(phase, input);
-      }
-
-      return await this.startModalTask(phase, input);
+      return await this.startSpritesTask(phase, input);
     } catch (error) {
       if (error instanceof CoderunnerError) {
         throw error;
       }
 
-      if (isRetryableModalError(error)) {
+      if (isRetryableSpritesError(error)) {
         throw new CoderunnerError({
-          message: `Modal transport retryable error during ${phase}`,
+          message: `Sprites transport retryable error during ${phase}`,
           retryable: true,
           code: "transport_retryable",
           cause: error
@@ -188,7 +186,7 @@ class ClaudeCodeRunner implements CoderunnerAdapter {
       }
 
       throw new CoderunnerError({
-        message: `Modal execution failed during ${phase}: ${
+        message: `Sprites execution failed during ${phase}: ${
           error instanceof Error ? error.message : String(error)
         }`,
         retryable: false,
@@ -220,7 +218,7 @@ class ClaudeCodeRunner implements CoderunnerAdapter {
     };
   }
 
-  private buildModalCommand(phase: ExecutionPhase, input: CoderunnerTaskInput): string {
+  private buildSpritesCommand(phase: ExecutionPhase, input: CoderunnerTaskInput): string {
     const base = `claude-code ${phase}`;
     const repo = `--repo ${input.repo.owner}/${input.repo.name}`;
     const issue = `--issue ${input.issueNumber}`;
@@ -232,10 +230,10 @@ class ClaudeCodeRunner implements CoderunnerAdapter {
   private toExecutionResponse(
     phase: ExecutionPhase,
     input: CoderunnerTaskInput,
-    result: ModalJobResult
+    result: SpritesJobResult
   ): StationExecutionResponse {
     const metadata = this.buildMetadata(phase, input, result.status);
-    if (!isTerminalModalJobStatus(result.status)) {
+    if (!isTerminalSpritesJobStatus(result.status)) {
       return {
         outcome: null,
         summary: `${phase} execution still ${result.status}`,
@@ -244,7 +242,7 @@ class ClaudeCodeRunner implements CoderunnerAdapter {
       };
     }
 
-    const outcome = mapModalStatusToOutcome(result.status);
+    const outcome = mapSpritesStatusToOutcome(result.status);
     const summaryPrefix = phase === "implement" ? "Implement" : "Verify";
     const summary =
       result.summary ||
@@ -259,14 +257,14 @@ class ClaudeCodeRunner implements CoderunnerAdapter {
     };
   }
 
-  private async startModalTask(
+  private async startSpritesTask(
     phase: ExecutionPhase,
     input: CoderunnerTaskInput
   ): Promise<StationExecutionResponse> {
     const submit = await this.transport!.submitJob({
       phase,
       runId: input.runId,
-      command: this.buildModalCommand(phase, input),
+      command: this.buildSpritesCommand(phase, input),
       env: {
         CLAUDE_CODE_API_KEY: this.claudeCodeApiKey!
       },
@@ -280,10 +278,20 @@ class ClaudeCodeRunner implements CoderunnerAdapter {
     });
 
     const metadata = this.buildMetadata(phase, input, submit.status);
-    if (!isTerminalModalJobStatus(submit.status)) {
+    if (!isTerminalSpritesJobStatus(submit.status)) {
       return {
         outcome: null,
-        summary: `${phase} execution submitted to Modal`,
+        summary: submit.summary ?? `${phase} execution submitted to Sprites`,
+        externalRef: submit.externalRef,
+        metadata
+      };
+    }
+
+    if (typeof submit.summary === "string" && submit.summary.trim().length > 0) {
+      return {
+        outcome: mapSpritesStatusToOutcome(submit.status),
+        summary: submit.summary,
+        logsInline: submit.logsInline,
         externalRef: submit.externalRef,
         metadata
       };
@@ -293,7 +301,7 @@ class ClaudeCodeRunner implements CoderunnerAdapter {
       const result = await this.transport!.getJobResult(submit.externalRef);
       return this.toExecutionResponse(phase, input, result);
     } catch (error) {
-      if (isRetryableModalError(error)) {
+      if (isRetryableSpritesError(error)) {
         return {
           outcome: null,
           summary: `${phase} execution result fetch retryable; will resume from external_ref=${submit.externalRef}`,
@@ -304,26 +312,6 @@ class ClaudeCodeRunner implements CoderunnerAdapter {
 
       throw error;
     }
-  }
-
-  private async resumeModalTask(
-    phase: ExecutionPhase,
-    input: CoderunnerTaskInput
-  ): Promise<StationExecutionResponse> {
-    const externalRef = input.resume!.externalRef;
-    const statusResult: ModalJobStatusResult = await this.transport!.getJobStatus(externalRef);
-    const metadata = this.buildMetadata(phase, input, statusResult.status);
-    if (!isTerminalModalJobStatus(statusResult.status)) {
-      return {
-        outcome: null,
-        summary: `${phase} execution still ${statusResult.status}`,
-        externalRef,
-        metadata
-      };
-    }
-
-    const result = await this.transport!.getJobResult(externalRef);
-    return this.toExecutionResponse(phase, input, result);
   }
 
   private runMockTask(phase: ExecutionPhase, input: CoderunnerTaskInput): StationExecutionResponse {
@@ -367,18 +355,18 @@ export function createCoderunnerAdapterFromEnv(
     });
   }
 
-  const modalTransport =
-    overrides.modalTransport ??
-    createModalExecutionTransportFromEnv({
-      MODAL_TOKEN_ID: env.MODAL_TOKEN_ID,
-      MODAL_TOKEN_SECRET: env.MODAL_TOKEN_SECRET,
-      MODAL_API_BASE_URL: env.MODAL_API_BASE_URL,
-      MODAL_TIMEOUT_MS: env.MODAL_TIMEOUT_MS
+  const spritesTransport =
+    overrides.spritesTransport ??
+    createSpritesExecutionTransportFromEnv({
+      SPRITE_TOKEN: env.SPRITE_TOKEN,
+      SPRITE_NAME: env.SPRITE_NAME,
+      SPRITES_API_BASE_URL: env.SPRITES_API_BASE_URL,
+      SPRITES_TIMEOUT_MS: env.SPRITES_TIMEOUT_MS
     });
 
   return createCoderunnerAdapter({
     mode,
-    modalTransport,
+    spritesTransport,
     claudeCodeApiKey: requireApiKey(mode, overrides.claudeCodeApiKey ?? env.CLAUDE_CODE_API_KEY),
     nowIso: overrides.nowIso
   });

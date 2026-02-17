@@ -1,5 +1,5 @@
-import { ModalRetryableTransportError } from "@bob/adapters-modal";
-import type { CoderunnerTaskInput, ModalExecutionTransport } from "@bob/core";
+import { SpritesRetryableTransportError } from "@bob/adapters-sprites";
+import type { CoderunnerTaskInput, SpritesExecutionTransport } from "@bob/core";
 import { describe, expect, it, vi } from "vitest";
 import { CoderunnerError, createCoderunnerAdapter } from "../src/index";
 
@@ -22,7 +22,7 @@ function createTaskInput(overrides: Partial<CoderunnerTaskInput> = {}): Coderunn
 }
 
 function createTransport(): {
-  transport: ModalExecutionTransport;
+  transport: SpritesExecutionTransport;
   submitJob: ReturnType<typeof vi.fn>;
   getJobStatus: ReturnType<typeof vi.fn>;
   getJobResult: ReturnType<typeof vi.fn>;
@@ -31,7 +31,7 @@ function createTransport(): {
   const getJobStatus = vi.fn();
   const getJobResult = vi.fn();
 
-  const transport: ModalExecutionTransport = {
+  const transport: SpritesExecutionTransport = {
     submitJob,
     getJobStatus,
     getJobResult
@@ -86,22 +86,18 @@ describe("coderunner adapter", () => {
     expect(verifyResult.outcome).toBe("failed");
   });
 
-  it("maps modal terminal outcomes", async () => {
-    const { transport, submitJob, getJobResult } = createTransport();
+  it("maps sprites terminal outcomes", async () => {
+    const { transport, submitJob } = createTransport();
     submitJob.mockResolvedValue({
-      externalRef: "job_timeout",
-      status: "timeout"
-    });
-    getJobResult.mockResolvedValue({
       externalRef: "job_timeout",
       status: "timeout",
       summary: "Timed out",
-      logsInline: "modal logs"
+      logsInline: "sprites logs"
     });
 
     const adapter = createCoderunnerAdapter({
-      mode: "modal",
-      modalTransport: transport,
+      mode: "sprites",
+      spritesTransport: transport,
       claudeCodeApiKey: "claude-key"
     });
 
@@ -113,24 +109,20 @@ describe("coderunner adapter", () => {
 
     expect(result.outcome).toBe("timeout");
     expect(result.summary).toBe("Timed out");
-    expect(result.logsInline).toBe("modal logs");
+    expect(result.logsInline).toBe("sprites logs");
   });
 
-  it("treats nonterminal modal result payloads as in-progress", async () => {
-    const { transport, submitJob, getJobResult } = createTransport();
+  it("treats nonterminal sprites submit payloads as in-progress", async () => {
+    const { transport, submitJob } = createTransport();
     submitJob.mockResolvedValue({
-      externalRef: "job_result_pending",
-      status: "succeeded"
-    });
-    getJobResult.mockResolvedValue({
       externalRef: "job_result_pending",
       status: "running",
       summary: "still running"
     });
 
     const adapter = createCoderunnerAdapter({
-      mode: "modal",
-      modalTransport: transport,
+      mode: "sprites",
+      spritesTransport: transport,
       claudeCodeApiKey: "claude-key"
     });
 
@@ -147,11 +139,11 @@ describe("coderunner adapter", () => {
       externalRef: "job_terminal_retryable",
       status: "succeeded"
     });
-    getJobResult.mockRejectedValue(new ModalRetryableTransportError("temporary fetch failure"));
+    getJobResult.mockRejectedValue(new SpritesRetryableTransportError("temporary fetch failure"));
 
     const adapter = createCoderunnerAdapter({
-      mode: "modal",
-      modalTransport: transport,
+      mode: "sprites",
+      spritesTransport: transport,
       claudeCodeApiKey: "claude-key"
     });
 
@@ -164,45 +156,51 @@ describe("coderunner adapter", () => {
     expect(getJobResult).toHaveBeenCalledOnce();
   });
 
-  it("resumes existing external refs instead of creating a new submission", async () => {
-    const { transport, submitJob, getJobStatus } = createTransport();
-    getJobStatus.mockResolvedValue({
-      externalRef: "job_existing",
-      status: "running"
+  it("increments metadata attempt when resumed metadata exists", async () => {
+    const { transport, submitJob } = createTransport();
+    submitJob.mockResolvedValue({
+      externalRef: "job_2",
+      status: "succeeded",
+      summary: "ok"
     });
 
     const adapter = createCoderunnerAdapter({
-      mode: "modal",
-      modalTransport: transport,
+      mode: "sprites",
+      spritesTransport: transport,
       claudeCodeApiKey: "claude-key"
     });
 
     const result = await adapter.runImplementTask(
       createTaskInput({
         resume: {
-          externalRef: "job_existing",
+          externalRef: "old_job",
           metadata: {
             phase: "implement",
-            mode: "modal",
+            mode: "sprites",
             attempt: 1
           }
         }
       })
     );
 
-    expect(result.outcome).toBeNull();
-    expect(result.externalRef).toBe("job_existing");
-    expect(submitJob).not.toHaveBeenCalled();
-    expect(getJobStatus).toHaveBeenCalledOnce();
+    if (result.outcome === null) {
+      throw new Error("Expected terminal result");
+    }
+
+    expect(result.metadata).toMatchObject({
+      attempt: 2,
+      phase: "implement",
+      mode: "sprites"
+    });
   });
 
-  it("classifies retryable modal errors", async () => {
+  it("classifies retryable sprites errors", async () => {
     const { transport, submitJob } = createTransport();
-    submitJob.mockRejectedValue(new ModalRetryableTransportError("temporary"));
+    submitJob.mockRejectedValue(new SpritesRetryableTransportError("temporary"));
 
     const adapter = createCoderunnerAdapter({
-      mode: "modal",
-      modalTransport: transport,
+      mode: "sprites",
+      spritesTransport: transport,
       claudeCodeApiKey: "claude-key"
     });
 

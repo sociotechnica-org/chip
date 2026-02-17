@@ -104,16 +104,16 @@ importers:
 
   packages/adapters-coderunner:
     dependencies:
-      "@bob/adapters-modal":
+      "@bob/adapters-sprites":
         specifier: workspace:*
-        version: link:../adapters-modal
+        version: link:../adapters-sprites
       "@bob/core":
         specifier: workspace:*
         version: link:../core
 
   packages/adapters-github: {}
 
-  packages/adapters-modal:
+  packages/adapters-sprites:
     dependencies:
       "@bob/core":
         specifier: workspace:*

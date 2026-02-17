@@ -85,7 +85,7 @@ describe("execution contracts", () => {
   it("validates station metadata payloads", () => {
     const metadata = {
       phase: "implement",
-      mode: "modal",
+      mode: "sprites",
       attempt: 2,
       providerStatus: "running"
     };

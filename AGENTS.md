@@ -22,7 +22,7 @@ Primary references:
 ## v0 Constraints
 
 1. Orchestration primitives: Cloudflare Agents + Workflows + Queues.
-2. Execution runtime for implementation/verify: Modal VMs.
+2. Execution runtime for implementation/verify: Sprites VMs.
 3. Storage: SQLite-based (Cloudflare D1 and/or Durable Object SQLite).
 4. Web app: Vite + React (not Next.js App Router).
 5. Language/tooling baseline: TypeScript, PNPM, Vitest, Playwright, ESLint, Prettier.
@@ -40,7 +40,7 @@ packages/
   core/
   config/
   adapters-github/
-  adapters-modal/
+  adapters-sprites/
   adapters-coderunner/
   observability/
   security/
@@ -63,7 +63,7 @@ docs/
 
 1. Accept run request from GitHub issue reference.
 2. Enqueue and orchestrate via Queue + Workflow.
-3. Execute implementation in Modal with coderunner.
+3. Execute implementation in Sprites with coderunner.
 4. Run verification commands based on target repo instructions.
 5. Push branch and open PR (`draft` or `ready` per run mode).
 6. Expose run status/logs for UI consumption.

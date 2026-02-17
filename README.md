@@ -15,7 +15,7 @@ v0 is intentionally narrow:
 - Auth to GitHub uses a PAT (`GITHUB_TOKEN`)
 - Target repo is `sociotechnica-org/lifebuild` only
 - Orchestration uses Cloudflare Agents + Workflows + Queues
-- Implementation and verification run in Modal VMs
+- Implementation and verification run in Sprites VMs
 - Storage is SQLite-based (Cloudflare D1 and/or Durable Object SQLite)
 - Web UI is Vite + React
 
@@ -25,7 +25,7 @@ The first working version should:
 
 1. Accept a GitHub issue reference.
 2. Queue and orchestrate a run.
-3. Execute implementation in a Modal VM using Claude Code.
+3. Execute implementation in a Sprites VM using Claude Code.
 4. Run repository verification commands.
 5. Push a branch and open a draft or ready PR.
 6. Expose run status, station progress, and logs.
@@ -42,7 +42,7 @@ bob-the-builder/
     core/
     config/
     adapters-github/
-    adapters-modal/
+    adapters-sprites/
     adapters-coderunner/
     observability/
     security/
@@ -102,8 +102,8 @@ PR3 adds the first asynchronous execution loop:
 
 PR4 replaces placeholder station bodies with adapter-driven execution:
 
-- `@bob/adapters-modal` provides typed submit/status/result transport primitives
-- `@bob/adapters-coderunner` provides mock + modal Claude runner modes
+- `@bob/adapters-sprites` provides typed submit/status/result transport primitives
+- `@bob/adapters-coderunner` provides mock + sprites Claude runner modes
 - queue-consumer `implement` and `verify` stations now persist:
   - `external_ref` + `metadata_json` in `station_executions`
   - `implement_summary` / `verify_summary` artifacts
@@ -139,14 +139,16 @@ For reliable local end-to-end queue execution during `pnpm dev`, configure:
 - `apps/queue-consumer-worker/.dev.vars`:
   - `LOCAL_QUEUE_SHARED_SECRET=...` (must match control worker)
   - `CODERUNNER_MODE=mock` (default; CI-safe)
-  - `CLAUDE_CODE_API_KEY=...` (required when `CODERUNNER_MODE=modal`)
-  - `MODAL_TOKEN_ID=...` (required when `CODERUNNER_MODE=modal`)
-  - `MODAL_TOKEN_SECRET=...` (required when `CODERUNNER_MODE=modal`)
+  - `CLAUDE_CODE_API_KEY=...` (required when `CODERUNNER_MODE=sprites`)
+  - `SPRITE_TOKEN=...` (required when `CODERUNNER_MODE=sprites`)
+  - `SPRITE_NAME=...` (required when `CODERUNNER_MODE=sprites`)
+  - `SPRITES_API_BASE_URL=...` (optional, defaults to `https://api.sprites.dev`)
+  - `SPRITES_TIMEOUT_MS=...` (optional)
 
-For real adapter QA, switch queue-consumer to modal mode:
+For real adapter QA, switch queue-consumer to sprites mode:
 
 ```bash
-export CODERUNNER_MODE=modal
+export CODERUNNER_MODE=sprites
 ```
 
 Reset local runtime state and rebuild a fresh local instance:

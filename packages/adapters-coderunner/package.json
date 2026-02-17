@@ -11,7 +11,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@bob/adapters-modal": "workspace:*",
+    "@bob/adapters-sprites": "workspace:*",
     "@bob/core": "workspace:*"
   }
 }

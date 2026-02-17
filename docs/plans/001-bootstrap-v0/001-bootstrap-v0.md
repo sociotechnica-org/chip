@@ -23,7 +23,7 @@ Deliver the smallest usable "issue to PR" software factory path for one target r
 ## 3. Constraints
 
 1. Cloudflare-first runtime using Agents + Workflows.
-2. Modal is required for implementation/verification VM execution.
+2. Sprites is required for implementation/verification VM execution.
 3. Storage must be SQLite-based (D1 and/or Durable Object SQLite).
 4. Frontend uses Vite + React (not Next.js App Router).
 5. Queueing uses Cloudflare Queues.
@@ -42,7 +42,7 @@ bob-the-builder/
     core/
     config/
     adapters-github/
-    adapters-modal/
+    adapters-sprites/
     adapters-coderunner/
     observability/
     security/
@@ -60,7 +60,7 @@ bob-the-builder/
 4. Workflow runs stations in order:
    - `intake`: fetch issue context
    - `plan`: generate short implementation plan
-   - `implement`: Modal VM + coderunner execution
+   - `implement`: Sprites VM + coderunner execution
    - `verify`: run repo checks
    - `create_pr`: push branch + open PR
 5. Agent state mirrors run progress for live status streaming.
@@ -89,7 +89,7 @@ All non-health routes are password-protected for v0.
 1. PR1: Monorepo scaffold, tooling, core types, password middleware.
 2. PR2: D1 schema + repo/run API + queue producer.
 3. PR3: Queue consumer + Workflow skeleton + station persistence.
-4. PR4: Modal adapter + Claude Code runner adapter.
+4. PR4: Sprites adapter + Claude Code runner adapter.
 5. PR5: GitHub adapter + PR creation station.
 6. PR6: Vite web dashboard (runs list/detail/artifacts).
 7. PR7: Hardening (retries, cancel, R2 artifacts, test coverage uplift).
@@ -98,9 +98,11 @@ All non-health routes are password-protected for v0.
 
 1. `GITHUB_TOKEN`
 2. `BOB_PASSWORD`
-3. `MODAL_TOKEN_ID`
-4. `MODAL_TOKEN_SECRET`
-5. `CLAUDE_CODE_API_KEY`
+3. `SPRITE_TOKEN`
+4. `SPRITE_NAME`
+5. `SPRITES_API_BASE_URL` (optional, defaults to `https://api.sprites.dev`)
+6. `SPRITES_TIMEOUT_MS` (optional)
+7. `CLAUDE_CODE_API_KEY`
 
 ## 10. Definition of Done for Bootstrap Phase
 

@@ -433,7 +433,7 @@ describe("queue-consumer worker", () => {
       external_ref: "job_failed",
       metadata_json: JSON.stringify({
         phase: "implement",
-        mode: "modal",
+        mode: "sprites",
         attempt: 1,
         providerStatus: "failed"
       })
@@ -466,7 +466,7 @@ describe("queue-consumer worker", () => {
         externalRef: input.resume?.externalRef,
         metadata: {
           phase: "implement",
-          mode: "modal",
+          mode: "sprites",
           attempt: 2
         }
       };
@@ -530,7 +530,7 @@ describe("queue-consumer worker", () => {
       external_ref: "job_existing",
       metadata_json: JSON.stringify({
         phase: "implement",
-        mode: "modal",
+        mode: "sprites",
         attempt: 1,
         providerStatus: "running"
       })
@@ -571,7 +571,7 @@ describe("queue-consumer worker", () => {
             externalRef: input.resume.externalRef,
             metadata: {
               phase: "implement",
-              mode: "modal",
+              mode: "sprites",
               attempt: 2
             },
             logsInline: "resumed logs"
@@ -580,11 +580,11 @@ describe("queue-consumer worker", () => {
 
         return {
           outcome: null,
-          summary: "Modal job still running",
+          summary: "Sprites job still running",
           externalRef: "job_progress",
           metadata: {
             phase: "implement",
-            mode: "modal",
+            mode: "sprites",
             attempt: 1
           }
         };
@@ -626,7 +626,7 @@ describe("queue-consumer worker", () => {
     expect(runningImplement?.external_ref).toBe("job_progress");
     expect(JSON.parse(runningImplement?.metadata_json ?? "{}")).toMatchObject({
       phase: "implement",
-      mode: "modal",
+      mode: "sprites",
       attempt: 1
     });
 
@@ -661,7 +661,7 @@ describe("queue-consumer worker", () => {
     const adapter: CoderunnerAdapter = {
       runImplementTask: async () => {
         throw new CoderunnerError({
-          message: "transient modal issue",
+          message: "transient sprites issue",
           retryable: true,
           code: "transport_retryable"
         });

@@ -1,6 +1,6 @@
 # PR4 Detailed Implementation Plan
 
-Status: Proposed  
+Status: Implemented  
 Date: 2026-02-13  
 Parent Plan: `docs/plans/001-bootstrap-v0/001-bootstrap-v0.md`  
 Previous Slice: `docs/plans/001-bootstrap-v0/pr3-implementation-plan.md`
@@ -11,7 +11,7 @@ Replace PR3 placeholder execution behavior with real execution adapters while pr
 
 Concretely:
 
-1. Implement `@bob/adapters-modal` as the execution transport layer.
+1. Implement `@bob/adapters-sprites` as the execution transport layer.
 2. Implement `@bob/adapters-coderunner` with a Claude Code runner contract.
 3. Wire queue-consumer `implement` and `verify` stations to the adapters.
 4. Persist actionable artifacts and logs from real execution.
@@ -26,7 +26,7 @@ PR3 proved orchestration, persistence, and queue idempotency shape. The biggest 
 ### In Scope
 
 1. Adapter contracts in shared domain package(s) and concrete implementations in:
-   - `packages/adapters-modal`
+   - `packages/adapters-sprites`
    - `packages/adapters-coderunner`
 2. Queue-consumer station implementation for:
    - `implement` (real coderunner execution path)
@@ -55,7 +55,7 @@ For `POST /v1/runs`:
 
 1. Run is enqueued and consumed as today.
 2. `intake` and `plan` still produce lightweight artifacts.
-3. `implement` uses adapters to execute Claude Code task in Modal-backed runtime.
+3. `implement` uses adapters to execute Claude Code task in Sprites-backed runtime.
 4. `verify` executes configured checks using the same runtime contract.
 5. Run ends `succeeded` only if both `implement` and `verify` are successful.
 6. `GET /v1/runs/:id` returns station timeline and execution artifacts that are meaningful for operators.
@@ -86,7 +86,7 @@ This keeps redelivery and run-state policy stable while allowing station interna
 
 Define contracts before implementation:
 
-1. Modal transport contract:
+1. Sprites transport contract:
    - submit execution
    - poll execution status
    - fetch logs/result payload
@@ -108,7 +108,7 @@ Add migration `apps/control-worker/migrations/0003_station_execution_external_re
 
 Usage:
 
-1. `external_ref`: provider execution id (Modal job id or equivalent).
+1. `external_ref`: provider execution id (Sprites execution id or equivalent).
 2. `metadata_json`: compact JSON for adapter-specific resume data (attempt, runner mode, timing).
 
 Why this is necessary:
@@ -129,20 +129,22 @@ Add domain types to `packages/core` (or a focused shared module if preferred):
    - `externalRef?`
    - `metadata?`
 4. Adapter interfaces:
-   - `ModalExecutionTransport`
+   - `SpritesExecutionTransport`
    - `CoderunnerAdapter`
 
 Add validators/type guards for any JSON persisted in `metadata_json`.
 
 ## 9. Adapter Implementation Plan
 
-## 9.1 `@bob/adapters-modal`
+## 9.1 `@bob/adapters-sprites`
 
 Implement:
 
 1. Auth config loader from env:
-   - `MODAL_TOKEN_ID`
-   - `MODAL_TOKEN_SECRET`
+   - `SPRITE_TOKEN`
+   - `SPRITE_NAME`
+   - `SPRITES_API_BASE_URL` (optional)
+   - `SPRITES_TIMEOUT_MS` (optional)
 2. Minimal client with explicit request/response parsing.
 3. `submitJob`, `getJobStatus`, `getJobResult` style primitives.
 4. Error mapping:
@@ -152,22 +154,22 @@ Implement:
 
 Non-goal in PR4:
 
-1. Broad Modal API surface.
+1. Broad Sprites API surface.
 
 ## 9.2 `@bob/adapters-coderunner`
 
 Implement:
 
-1. `ClaudeCodeRunner` using Modal transport dependency injection.
+1. `ClaudeCodeRunner` using Sprites transport dependency injection.
 2. `runImplementTask(input)` and `runVerifyTask(input)` returning `StationExecutionResult`.
 3. Standardized summary fields for DB and artifact writing.
 
 Execution modes:
 
 1. `mock` mode for tests/CI.
-2. `modal` mode for real manual QA.
+2. `sprites` mode for real manual QA.
 
-Mode selected by env var (for example `CODERUNNER_MODE=mock|modal`).
+Mode selected by env var (for example `CODERUNNER_MODE=mock|sprites`).
 
 ## 10. Queue Consumer Integration Plan
 
@@ -221,10 +223,12 @@ Rules:
 
 Add/standardize worker env vars:
 
-1. `MODAL_TOKEN_ID`
-2. `MODAL_TOKEN_SECRET`
+1. `SPRITE_TOKEN`
+2. `SPRITE_NAME`
 3. `CLAUDE_CODE_API_KEY`
 4. `CODERUNNER_MODE` (`mock` default for local tests)
+5. `SPRITES_API_BASE_URL` (optional)
+6. `SPRITES_TIMEOUT_MS` (optional)
 
 Update:
 
@@ -237,7 +241,7 @@ Update:
 
 Add adapter tests:
 
-1. Modal client request signing/auth headers and error mapping.
+1. Sprites client request auth headers and error mapping.
 2. Coderunner adapter success/failure/timeout mapping.
 3. Resume behavior when `external_ref` exists.
 
@@ -258,7 +262,7 @@ Extend queue-consumer unit tests:
 
 ## 13.3 CI
 
-No external Modal dependency in CI. CI should stay deterministic with mock adapter mode.
+No external Sprites dependency in CI. CI should stay deterministic with mock adapter mode.
 
 ## 14. Manual QA Plan
 
@@ -272,8 +276,8 @@ No external Modal dependency in CI. CI should stay deterministic with mock adapt
 
 ### Real Mode (pre-PR5 confidence path)
 
-1. Set Modal and Claude credentials in local env.
-2. Set `CODERUNNER_MODE=modal`.
+1. Set Sprites and Claude credentials in local env.
+2. Set `CODERUNNER_MODE=sprites`.
 3. Run same API flow.
 4. Verify station metadata includes external refs and logs are captured.
 5. Simulate consumer restart during `implement`; verify resume uses persisted external ref.
@@ -302,7 +306,7 @@ No external Modal dependency in CI. CI should stay deterministic with mock adapt
 ## 17. Suggested PR4 Internal Milestones
 
 1. Milestone A: Contracts + migrations + adapter scaffolds with tests.
-2. Milestone B: Modal adapter concrete transport and tests.
+2. Milestone B: Sprites adapter concrete transport and tests.
 3. Milestone C: Claude runner adapter and queue-consumer station integration.
 4. Milestone D: Resume/idempotency hardening + smoke QA docs.
 
@@ -314,7 +318,7 @@ After PR4:
 2. `implement` output can provide branch/patch metadata needed by PR creation.
 3. Existing station persistence and artifact model should remain unchanged.
 
-## 19. Open Questions Before PR4 Starts
+## 19. Open Questions for Post-PR4 Follow-up
 
 1. Should PR4 set `work_branch` on runs from implement output even before PR5 pushes to GitHub?
 2. Do we want verify failures to emit a separate `verify_report` artifact type now, or keep one generic summary artifact per station?
