@@ -146,6 +146,13 @@ function asMetadata(value: unknown): Record<string, unknown> | undefined {
 }
 
 function extractErrorMessage(payload: unknown): string {
+  if (typeof payload === "string") {
+    const trimmed = payload.trim();
+    if (trimmed.length > 0) {
+      return trimmed;
+    }
+  }
+
   if (!isRecord(payload)) {
     return "Unexpected Modal error response";
   }
@@ -333,16 +340,21 @@ class HttpModalExecutionTransport implements ModalExecutionTransport {
 
       const rawBody = await response.text();
       let payload: unknown = null;
+      let parseFailed = false;
       if (rawBody.trim().length > 0) {
         try {
           payload = JSON.parse(rawBody);
         } catch {
-          throw new ModalProviderError("Modal returned non-JSON response body", response.status);
+          parseFailed = true;
         }
       }
 
       if (!response.ok) {
-        throw mapHttpError(response.status, payload);
+        throw mapHttpError(response.status, parseFailed ? rawBody : payload);
+      }
+
+      if (parseFailed) {
+        throw new ModalProviderError("Modal returned non-JSON response body", response.status);
       }
 
       return {

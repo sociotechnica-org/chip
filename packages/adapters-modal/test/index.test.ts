@@ -121,6 +121,24 @@ describe("Http modal transport", () => {
     );
   });
 
+  it("keeps retryable status codes retryable when response body is non-json", async () => {
+    const transport = createModalExecutionTransport({
+      auth,
+      fetchFn: vi.fn().mockResolvedValue(
+        new Response("temporarily unavailable", {
+          status: 503,
+          headers: {
+            "content-type": "text/plain"
+          }
+        })
+      )
+    });
+
+    await expect(transport.getJobStatus("job_1")).rejects.toBeInstanceOf(
+      ModalRetryableTransportError
+    );
+  });
+
   it("maps terminal provider failures", async () => {
     const transport = createModalExecutionTransport({
       auth,
