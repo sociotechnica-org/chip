@@ -11,6 +11,9 @@ const MAX_LIST_LIMIT = 100;
 const TEXT_ENCODER = new TextEncoder();
 const LOCAL_QUEUE_CONSUME_PATH = "/__queue/consume";
 const LOCAL_QUEUE_SECRET_HEADER = "x-bob-local-queue-secret";
+const LOCAL_QUEUE_BRIDGE_MAX_RETRIES = 100;
+const LOCAL_QUEUE_BRIDGE_DEFAULT_RETRY_DELAY_SECONDS = 30;
+const LOCAL_QUEUE_BRIDGE_MAX_RETRY_DELAY_SECONDS = 300;
 
 type IdempotencyStatus = "pending" | "succeeded" | "failed";
 
@@ -100,8 +103,18 @@ interface CreateRunInput {
   prMode: PrMode;
 }
 
+interface ParsedRunRepoIssue {
+  owner: string;
+  name: string;
+  issueNumber: number;
+}
+
 function json(status: number, body: unknown): Response {
   return Response.json(body, { status });
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function badRequest(message: string): Response {
@@ -200,11 +213,10 @@ function validateCreateRepoInput(body: unknown): { value?: CreateRepoInput; erro
   };
 }
 
-function validateCreateRunInput(body: unknown): { value?: CreateRunInput; error?: Response } {
-  if (!isObject(body)) {
-    return { error: badRequest("Request body must be a JSON object") };
-  }
-
+function parseCreateRunRepoIssue(body: Record<string, unknown>): {
+  value?: ParsedRunRepoIssue;
+  error?: Response;
+} {
   const repo = body.repo;
   const issue = body.issue;
   if (!isObject(repo) || !isObject(issue)) {
@@ -222,31 +234,68 @@ function validateCreateRunInput(body: unknown): { value?: CreateRunInput; error?
     return { error: badRequest("issue.number must be a positive integer") };
   }
 
-  if (!isNonEmptyString(body.requestor)) {
-    return { error: badRequest("requestor is required") };
+  return {
+    value: {
+      owner,
+      name,
+      issueNumber
+    }
+  };
+}
+
+function parseCreateRunGoal(goal: unknown): { value?: string | null; error?: Response } {
+  if (goal === undefined) {
+    return { value: null };
   }
 
-  const prModeValue = isNonEmptyString(body.prMode) ? body.prMode : "draft";
+  if (!isNonEmptyString(goal)) {
+    return { error: badRequest("goal must be a non-empty string when provided") };
+  }
+
+  return { value: goal.trim() };
+}
+
+function parseCreateRunPrMode(prMode: unknown): { value?: PrMode; error?: Response } {
+  const prModeValue = isNonEmptyString(prMode) ? prMode : "draft";
   if (!isPrMode(prModeValue)) {
     return { error: badRequest("prMode must be one of: draft, ready") };
   }
 
-  let goal: string | null = null;
-  if (body.goal !== undefined) {
-    if (!isNonEmptyString(body.goal)) {
-      return { error: badRequest("goal must be a non-empty string when provided") };
-    }
-    goal = body.goal.trim();
+  return { value: prModeValue };
+}
+
+function validateCreateRunInput(body: unknown): { value?: CreateRunInput; error?: Response } {
+  if (!isObject(body)) {
+    return { error: badRequest("Request body must be a JSON object") };
+  }
+
+  const repoIssue = parseCreateRunRepoIssue(body);
+  if (repoIssue.error || !repoIssue.value) {
+    return { error: repoIssue.error ?? serverError() };
+  }
+
+  if (!isNonEmptyString(body.requestor)) {
+    return { error: badRequest("requestor is required") };
+  }
+
+  const parsedPrMode = parseCreateRunPrMode(body.prMode);
+  if (parsedPrMode.error || !parsedPrMode.value) {
+    return { error: parsedPrMode.error ?? serverError() };
+  }
+
+  const parsedGoal = parseCreateRunGoal(body.goal);
+  if (parsedGoal.error || parsedGoal.value === undefined) {
+    return { error: parsedGoal.error ?? serverError() };
   }
 
   return {
     value: {
-      repoOwner: normalizeOwner(owner),
-      repoName: normalizeName(name),
-      issueNumber,
-      goal,
+      repoOwner: normalizeOwner(repoIssue.value.owner),
+      repoName: normalizeName(repoIssue.value.name),
+      issueNumber: repoIssue.value.issueNumber,
+      goal: parsedGoal.value,
       requestor: body.requestor.trim(),
-      prMode: prModeValue
+      prMode: parsedPrMode.value
     }
   };
 }
@@ -781,7 +830,9 @@ function buildQueueMessage(run: RunWithRepoRow): RunQueueMessage {
 async function dispatchLocalQueueMessageBestEffort(
   env: Env,
   run: RunWithRepoRow,
-  message: RunQueueMessage
+  message: RunQueueMessage,
+  ctx: ExecutionContext | undefined,
+  attempt = 1
 ): Promise<void> {
   const rawConsumerUrl = env.LOCAL_QUEUE_CONSUMER_URL;
   if (!isNonEmptyString(rawConsumerUrl)) {
@@ -809,16 +860,56 @@ async function dispatchLocalQueueMessageBestEffort(
     logEvent("run.local_queue_bridge.error", {
       runId: run.id,
       endpoint,
+      attempt,
       error: errorMessage(error)
     });
     return;
   }
 
+  const body = (await response.text()).slice(0, 500);
   if (!response.ok) {
-    const body = (await response.text()).slice(0, 500);
+    const retry = parseLocalQueueRetryResponse(body);
+    if (retry) {
+      if (attempt >= LOCAL_QUEUE_BRIDGE_MAX_RETRIES) {
+        logEvent("run.local_queue_bridge.retry_exhausted", {
+          runId: run.id,
+          endpoint,
+          attempts: attempt
+        });
+        return;
+      }
+      if (!ctx) {
+        logEvent("run.local_queue_bridge.retry_dropped_no_context", {
+          runId: run.id,
+          endpoint,
+          attempt
+        });
+        return;
+      }
+
+      const nextAttempt = attempt + 1;
+      const delaySeconds = retry.delaySeconds;
+      logEvent("run.local_queue_bridge.retry_scheduled", {
+        runId: run.id,
+        endpoint,
+        attempt,
+        nextAttempt,
+        delaySeconds
+      });
+
+      ctx.waitUntil(
+        (async () => {
+          await sleep(delaySeconds * 1_000);
+          await dispatchLocalQueueMessageBestEffort(env, run, message, ctx, nextAttempt);
+        })()
+      );
+      return;
+    }
+
     logEvent("run.local_queue_bridge.failed", {
       runId: run.id,
       endpoint,
+      attempt,
       status: response.status,
       body
     });
@@ -827,15 +918,43 @@ async function dispatchLocalQueueMessageBestEffort(
 
   logEvent("run.local_queue_bridge.dispatched", {
     runId: run.id,
-    endpoint
+    endpoint,
+    attempt
   });
 }
 
-async function enqueueRun(env: Env, run: RunWithRepoRow): Promise<void> {
+function parseLocalQueueRetryResponse(body: string): { delaySeconds: number } | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+
+  if (!isObject(parsed) || parsed.outcome !== "retry") {
+    return null;
+  }
+
+  const rawDelay = parsed.delaySeconds;
+  if (typeof rawDelay === "number" && Number.isFinite(rawDelay)) {
+    const rounded = Math.floor(rawDelay);
+    if (rounded >= 1) {
+      return {
+        delaySeconds: Math.min(rounded, LOCAL_QUEUE_BRIDGE_MAX_RETRY_DELAY_SECONDS)
+      };
+    }
+  }
+
+  return {
+    delaySeconds: LOCAL_QUEUE_BRIDGE_DEFAULT_RETRY_DELAY_SECONDS
+  };
+}
+
+async function enqueueRun(env: Env, run: RunWithRepoRow, ctx?: ExecutionContext): Promise<void> {
   const message = buildQueueMessage(run);
   // The durable queue is the source of truth; local bridge is best-effort for local dev wiring.
   await env.RUN_QUEUE.send(message);
-  await dispatchLocalQueueMessageBestEffort(env, run, message);
+  await dispatchLocalQueueMessageBestEffort(env, run, message, ctx);
 }
 
 function serializeIdempotency(
@@ -899,7 +1018,12 @@ async function deleteRunOrServerError(
   }
 }
 
-async function replayExistingRun(env: Env, key: string, requestHash: string): Promise<Response> {
+async function replayExistingRun(
+  env: Env,
+  key: string,
+  requestHash: string,
+  ctx?: ExecutionContext
+): Promise<Response> {
   const existingKey = await getIdempotencyRow(env, key);
   if (!existingKey) {
     return serverError("Failed to load idempotency record");
@@ -932,7 +1056,7 @@ async function replayExistingRun(env: Env, key: string, requestHash: string): Pr
     }
 
     try {
-      await enqueueRun(env, run);
+      await enqueueRun(env, run, ctx);
     } catch (error) {
       return buildEnqueueFailureResponse({
         env,
@@ -1020,39 +1144,54 @@ async function handleListRepos(env: Env): Promise<Response> {
   }
 }
 
-async function handleCreateRun(request: Request, env: Env): Promise<Response> {
+function readIdempotencyKey(request: Request): { value?: string; error?: Response } {
   const idempotencyKey = request.headers.get(IDEMPOTENCY_KEY_HEADER)?.trim();
   if (!idempotencyKey) {
-    return badRequest("Idempotency-Key header is required");
+    return { error: badRequest("Idempotency-Key header is required") };
   }
 
+  return { value: idempotencyKey };
+}
+
+async function parseCreateRunRequest(
+  request: Request
+): Promise<{ value?: CreateRunInput; error?: Response }> {
   const parsed = await parseJson(request);
   if (parsed.error) {
-    return parsed.error;
+    return { error: parsed.error };
   }
 
   const validation = validateCreateRunInput(parsed.value);
   if (validation.error || !validation.value) {
-    return validation.error ?? serverError();
+    return { error: validation.error ?? serverError() };
   }
 
-  const requestHash = await sha256Hex(canonicalRunRequestPayload(validation.value));
+  return { value: validation.value };
+}
 
-  const existing = await getIdempotencyRow(env, idempotencyKey);
-  if (existing) {
-    return replayExistingRun(env, idempotencyKey, requestHash);
-  }
-
-  const repo = await getRepoByOwnerName(env, validation.value.repoOwner, validation.value.repoName);
+async function resolveEnabledRepo(
+  env: Env,
+  input: CreateRunInput
+): Promise<{ value?: RepoRow; error?: Response }> {
+  const repo = await getRepoByOwnerName(env, input.repoOwner, input.repoName);
   if (!repo) {
-    return badRequest("Repository not found");
-  }
-  if (!fromSqlBoolean(repo.enabled)) {
-    return badRequest("Repository is disabled");
+    return { error: badRequest("Repository not found") };
   }
 
+  if (!fromSqlBoolean(repo.enabled)) {
+    return { error: badRequest("Repository is disabled") };
+  }
+
+  return { value: repo };
+}
+
+async function createQueuedRun(
+  env: Env,
+  repo: RepoRow,
+  input: CreateRunInput,
+  idempotencyKey: string
+): Promise<{ value?: RunWithRepoRow; error?: Response }> {
   const runId = `run_${crypto.randomUUID()}`;
-  let run: RunWithRepoRow;
   try {
     const timestamp = nowIso();
     await env.DB.prepare(
@@ -1078,14 +1217,14 @@ async function handleCreateRun(request: Request, env: Env): Promise<Response> {
       .bind(
         runId,
         repo.id,
-        validation.value.issueNumber,
-        validation.value.goal,
+        input.issueNumber,
+        input.goal,
         "queued",
         null,
-        validation.value.requestor,
+        input.requestor,
         repo.default_branch,
         null,
-        validation.value.prMode,
+        input.prMode,
         null,
         timestamp,
         null,
@@ -1098,67 +1237,69 @@ async function handleCreateRun(request: Request, env: Env): Promise<Response> {
     if (!createdRun) {
       throw new Error("Failed to load run after insert");
     }
-    run = createdRun;
+
+    return { value: createdRun };
   } catch (error) {
     logEvent("run.create.failed", {
       error: error instanceof Error ? error.message : String(error),
       idempotencyKey
     });
-    return serverError("Failed to create run");
+    return { error: serverError("Failed to create run") };
+  }
+}
+
+interface CreateRunPreconditions {
+  idempotencyKey: string;
+  input: CreateRunInput;
+  requestHash: string;
+  repo: RepoRow;
+}
+
+async function resolveCreateRunPreconditions(
+  request: Request,
+  env: Env,
+  ctx?: ExecutionContext
+): Promise<{ value?: CreateRunPreconditions; response?: Response }> {
+  const parsedIdempotencyKey = readIdempotencyKey(request);
+  if (parsedIdempotencyKey.error || !parsedIdempotencyKey.value) {
+    return { response: parsedIdempotencyKey.error ?? serverError() };
   }
 
-  let claimed = false;
-  try {
-    claimed = await claimIdempotencyKey(env, idempotencyKey, requestHash, runId);
-  } catch (error) {
-    logEvent("run.idempotency.claim.failed", {
-      runId: run.id,
-      idempotencyKey,
-      error: errorMessage(error)
-    });
+  const createRunInput = await parseCreateRunRequest(request);
+  if (createRunInput.error || !createRunInput.value) {
+    return { response: createRunInput.error ?? serverError() };
+  }
 
-    const cleanupError = await deleteRunOrServerError(
-      env,
-      run.id,
+  const idempotencyKey = parsedIdempotencyKey.value;
+  const input = createRunInput.value;
+  const requestHash = await sha256Hex(canonicalRunRequestPayload(input));
+
+  if (await getIdempotencyRow(env, idempotencyKey)) {
+    return {
+      response: await replayExistingRun(env, idempotencyKey, requestHash, ctx)
+    };
+  }
+
+  const repoResolution = await resolveEnabledRepo(env, input);
+  if (repoResolution.error || !repoResolution.value) {
+    return { response: repoResolution.error ?? serverError() };
+  }
+
+  return {
+    value: {
       idempotencyKey,
-      "run.delete.failed.after_idempotency_claim_error",
-      "Failed to clean up run after idempotency claim failure"
-    );
-    if (cleanupError) {
-      return cleanupError;
+      input,
+      requestHash,
+      repo: repoResolution.value
     }
-    return serverError("Failed to claim idempotency key");
-  }
+  };
+}
 
-  if (!claimed) {
-    const cleanupError = await deleteRunOrServerError(
-      env,
-      run.id,
-      idempotencyKey,
-      "run.delete.failed.after_idempotency_conflict",
-      "Failed to clean up run after idempotency conflict"
-    );
-    if (cleanupError) {
-      return cleanupError;
-    }
-    return replayExistingRun(env, idempotencyKey, requestHash);
-  }
-
-  try {
-    await enqueueRun(env, run);
-  } catch (error) {
-    return buildEnqueueFailureResponse({
-      env,
-      run,
-      idempotencyKey,
-      replayed: false,
-      enqueueError: error,
-      markerFailureEvent: "run.queue_failure_marker.failed.after_enqueue_error",
-      idempotencyFailureEvent: "run.idempotency.failed.failed.after_enqueue_error",
-      enqueueFailureEvent: "run.enqueue.failed"
-    });
-  }
-
+async function finalizeCreateRunResponse(
+  env: Env,
+  run: RunWithRepoRow,
+  idempotencyKey: string
+): Promise<Response> {
   const idempotencySucceeded = await setIdempotencyStatusSafely(
     env,
     idempotencyKey,
@@ -1174,6 +1315,118 @@ async function handleCreateRun(request: Request, env: Env): Promise<Response> {
     run: serializeRun(run),
     idempotency: serializeIdempotency(idempotencyKey, false, idempotencyStatus)
   });
+}
+
+async function claimNewIdempotencyOrResolveConflict(input: {
+  env: Env;
+  run: RunWithRepoRow;
+  idempotencyKey: string;
+  requestHash: string;
+  ctx?: ExecutionContext;
+}): Promise<{ proceed: boolean; response?: Response }> {
+  let claimed = false;
+  try {
+    claimed = await claimIdempotencyKey(
+      input.env,
+      input.idempotencyKey,
+      input.requestHash,
+      input.run.id
+    );
+  } catch (error) {
+    logEvent("run.idempotency.claim.failed", {
+      runId: input.run.id,
+      idempotencyKey: input.idempotencyKey,
+      error: errorMessage(error)
+    });
+
+    const cleanupError = await deleteRunOrServerError(
+      input.env,
+      input.run.id,
+      input.idempotencyKey,
+      "run.delete.failed.after_idempotency_claim_error",
+      "Failed to clean up run after idempotency claim failure"
+    );
+    if (cleanupError) {
+      return {
+        proceed: false,
+        response: cleanupError
+      };
+    }
+
+    return {
+      proceed: false,
+      response: serverError("Failed to claim idempotency key")
+    };
+  }
+
+  if (claimed) {
+    return { proceed: true };
+  }
+
+  const cleanupError = await deleteRunOrServerError(
+    input.env,
+    input.run.id,
+    input.idempotencyKey,
+    "run.delete.failed.after_idempotency_conflict",
+    "Failed to clean up run after idempotency conflict"
+  );
+  if (cleanupError) {
+    return {
+      proceed: false,
+      response: cleanupError
+    };
+  }
+
+  return {
+    proceed: false,
+    response: await replayExistingRun(input.env, input.idempotencyKey, input.requestHash, input.ctx)
+  };
+}
+
+async function handleCreateRun(
+  request: Request,
+  env: Env,
+  ctx?: ExecutionContext
+): Promise<Response> {
+  const preconditions = await resolveCreateRunPreconditions(request, env, ctx);
+  if (preconditions.response || !preconditions.value) {
+    return preconditions.response ?? serverError();
+  }
+
+  const { idempotencyKey, input, requestHash, repo } = preconditions.value;
+  const createdRun = await createQueuedRun(env, repo, input, idempotencyKey);
+  if (createdRun.error || !createdRun.value) {
+    return createdRun.error ?? serverError();
+  }
+
+  const run = createdRun.value;
+  const claimResult = await claimNewIdempotencyOrResolveConflict({
+    env,
+    run,
+    idempotencyKey,
+    requestHash,
+    ctx
+  });
+  if (!claimResult.proceed) {
+    return claimResult.response ?? serverError();
+  }
+
+  try {
+    await enqueueRun(env, run, ctx);
+  } catch (error) {
+    return buildEnqueueFailureResponse({
+      env,
+      run,
+      idempotencyKey,
+      replayed: false,
+      enqueueError: error,
+      markerFailureEvent: "run.queue_failure_marker.failed.after_enqueue_error",
+      idempotencyFailureEvent: "run.idempotency.failed.failed.after_enqueue_error",
+      enqueueFailureEvent: "run.enqueue.failed"
+    });
+  }
+
+  return finalizeCreateRunResponse(env, run, idempotencyKey);
 }
 
 async function handleListRuns(url: URL, env: Env): Promise<Response> {
@@ -1233,7 +1486,65 @@ async function handleGetRun(runId: string, env: Env): Promise<Response> {
   }
 }
 
-export async function handleRequest(request: Request, env: Env): Promise<Response> {
+function routePublicRequest(method: string, pathname: string): Response | null {
+  if (method === "GET" && pathname === "/healthz") {
+    return json(200, {
+      ok: true,
+      service: "control-worker"
+    });
+  }
+
+  return null;
+}
+
+async function routeV1Request(
+  method: string,
+  url: URL,
+  request: Request,
+  env: Env,
+  ctx?: ExecutionContext
+): Promise<Response | null> {
+  const key = `${method} ${url.pathname}`;
+  if (key === "GET /v1/ping") {
+    return json(200, {
+      ok: true,
+      message: "pong"
+    });
+  }
+
+  if (key === "POST /v1/repos") {
+    return handleCreateRepo(request, env);
+  }
+
+  if (key === "GET /v1/repos") {
+    return handleListRepos(env);
+  }
+
+  if (key === "POST /v1/runs") {
+    return handleCreateRun(request, env, ctx);
+  }
+
+  if (key === "GET /v1/runs") {
+    return handleListRuns(url, env);
+  }
+
+  if (method !== "GET") {
+    return null;
+  }
+
+  const runId = parseRunId(url.pathname);
+  if (!runId) {
+    return null;
+  }
+
+  return handleGetRun(runId, env);
+}
+
+export async function handleRequest(
+  request: Request,
+  env: Env,
+  ctx?: ExecutionContext
+): Promise<Response> {
   const url = new URL(request.url);
   const method = request.method.toUpperCase();
 
@@ -1242,11 +1553,9 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     path: url.pathname
   });
 
-  if (method === "GET" && url.pathname === "/healthz") {
-    return json(200, {
-      ok: true,
-      service: "control-worker"
-    });
+  const publicResponse = routePublicRequest(method, url.pathname);
+  if (publicResponse) {
+    return publicResponse;
   }
 
   if (!url.pathname.startsWith("/v1/")) {
@@ -1258,39 +1567,14 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     return unauthorized;
   }
 
-  if (method === "GET" && url.pathname === "/v1/ping") {
-    return json(200, {
-      ok: true,
-      message: "pong"
-    });
-  }
-
-  if (method === "POST" && url.pathname === "/v1/repos") {
-    return handleCreateRepo(request, env);
-  }
-
-  if (method === "GET" && url.pathname === "/v1/repos") {
-    return handleListRepos(env);
-  }
-
-  if (method === "POST" && url.pathname === "/v1/runs") {
-    return handleCreateRun(request, env);
-  }
-
-  if (method === "GET" && url.pathname === "/v1/runs") {
-    return handleListRuns(url, env);
-  }
-
-  if (method === "GET") {
-    const runId = parseRunId(url.pathname);
-    if (runId) {
-      return handleGetRun(runId, env);
-    }
+  const routed = await routeV1Request(method, url, request, env, ctx);
+  if (routed) {
+    return routed;
   }
 
   return routeNotFound();
 }
 
 export default {
-  fetch: handleRequest
+  fetch: (request: Request, env: Env, ctx: ExecutionContext) => handleRequest(request, env, ctx)
 } satisfies ExportedHandler<Env>;

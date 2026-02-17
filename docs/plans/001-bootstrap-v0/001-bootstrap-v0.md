@@ -16,19 +16,19 @@ Deliver the smallest usable "issue to PR" software factory path for one target r
 
 1. GitHub auth uses PAT via `GITHUB_TOKEN`.
 2. Initial target repo is only `sociotechnica-org/lifebuild`.
-3. Verification commands are sourced from target repo instructions (`AGENTS.md` or `CLAUDE.md`).
+3. Verification commands are sourced from target repo instructions (`AGENTS.md` plus project OpenCode instructions/config).
 4. PR mode can be `draft` or `ready` from run instructions.
 5. Shared password gate is acceptable for v0.
 
 ## 3. Constraints
 
 1. Cloudflare-first runtime using Agents + Workflows.
-2. Modal is required for implementation/verification VM execution.
+2. Sprites is required for implementation/verification VM execution.
 3. Storage must be SQLite-based (D1 and/or Durable Object SQLite).
 4. Frontend uses Vite + React (not Next.js App Router).
 5. Queueing uses Cloudflare Queues.
 6. Tooling baseline: TypeScript, PNPM, Vitest, Playwright, ESLint, Prettier.
-7. Coderunner starts with Claude Code, adapter remains swappable for OpenCode.
+7. Coderunner standardizes on OpenCode, with adapter boundaries preserved for future runner swaps.
 
 ## 4. Proposed Monorepo Layout
 
@@ -42,7 +42,7 @@ bob-the-builder/
     core/
     config/
     adapters-github/
-    adapters-modal/
+    adapters-sprites/
     adapters-coderunner/
     observability/
     security/
@@ -60,7 +60,7 @@ bob-the-builder/
 4. Workflow runs stations in order:
    - `intake`: fetch issue context
    - `plan`: generate short implementation plan
-   - `implement`: Modal VM + coderunner execution
+   - `implement`: Sprites VM + coderunner execution
    - `verify`: run repo checks
    - `create_pr`: push branch + open PR
 5. Agent state mirrors run progress for live status streaming.
@@ -89,7 +89,7 @@ All non-health routes are password-protected for v0.
 1. PR1: Monorepo scaffold, tooling, core types, password middleware.
 2. PR2: D1 schema + repo/run API + queue producer.
 3. PR3: Queue consumer + Workflow skeleton + station persistence.
-4. PR4: Modal adapter + Claude Code runner adapter.
+4. PR4: Sprites adapter + OpenCode runner adapter.
 5. PR5: GitHub adapter + PR creation station.
 6. PR6: Vite web dashboard (runs list/detail/artifacts).
 7. PR7: Hardening (retries, cancel, R2 artifacts, test coverage uplift).
@@ -98,9 +98,29 @@ All non-health routes are password-protected for v0.
 
 1. `GITHUB_TOKEN`
 2. `BOB_PASSWORD`
-3. `MODAL_TOKEN_ID`
-4. `MODAL_TOKEN_SECRET`
-5. `CLAUDE_CODE_API_KEY`
+3. `SPRITE_TOKEN`
+4. `SPRITE_NAME`
+5. `SPRITES_API_BASE_URL` (optional, defaults to `https://api.sprites.dev`)
+6. `SPRITES_TIMEOUT_MS` (optional)
+7. `OPENCODE_MODEL` (for example `anthropic/claude-sonnet-4-20250514`)
+8. Provider credential env var(s) used by OpenCode config (for example `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.)
+
+## 9.1 Ramp-Inspired Implementation Notes
+
+The Ramp background-agent architecture suggests a few implementation patterns we should carry into v0:
+
+1. Treat each run as a durable agent session with explicit resume points, not a single fire-and-forget command.
+2. Keep two artifact channels:
+   - primary execution stream (full tool logs/checkpoints)
+   - compact operator summary stream (small, always-readable run/station status)
+3. Prefer framework-native extension points over prompt hacks:
+   - OpenCode plugins/hooks for guardrails, retries, and tool policy
+   - explicit lifecycle events for observability and control
+4. Persist more than text output:
+   - session id/external ref
+   - model/provider/mode metadata
+   - tool invocations and terminal reason
+5. Design for human-in-the-loop transitions (pause/resume/escalate) without discarding agent context.
 
 ## 10. Definition of Done for Bootstrap Phase
 

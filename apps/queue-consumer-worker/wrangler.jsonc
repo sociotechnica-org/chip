@@ -14,7 +14,8 @@
   "queues": {
     "consumers": [
       {
-        "queue": "bob-runs"
+        "queue": "bob-runs",
+        "max_retries": 100
       }
     ]
   },
@@ -23,6 +24,12 @@
     "head_sampling_rate": 1
   },
   "vars": {
-    "LOCAL_QUEUE_SHARED_SECRET": ""
+    "LOCAL_QUEUE_SHARED_SECRET": "",
+    "CODERUNNER_MODE": "mock",
+    "SPRITE_TOKEN": "",
+    "SPRITE_NAME": "",
+    "SPRITES_API_BASE_URL": "",
+    "SPRITES_TIMEOUT_MS": "",
+    "CLAUDE_CODE_API_KEY": ""
   }
 }

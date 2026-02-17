@@ -22,7 +22,7 @@ Primary references:
 ## v0 Constraints
 
 1. Orchestration primitives: Cloudflare Agents + Workflows + Queues.
-2. Execution runtime for implementation/verify: Modal VMs.
+2. Execution runtime for implementation/verify: Sprites VMs.
 3. Storage: SQLite-based (Cloudflare D1 and/or Durable Object SQLite).
 4. Web app: Vite + React (not Next.js App Router).
 5. Language/tooling baseline: TypeScript, PNPM, Vitest, Playwright, ESLint, Prettier.
@@ -40,7 +40,7 @@ packages/
   core/
   config/
   adapters-github/
-  adapters-modal/
+  adapters-sprites/
   adapters-coderunner/
   observability/
   security/
@@ -63,7 +63,7 @@ docs/
 
 1. Accept run request from GitHub issue reference.
 2. Enqueue and orchestrate via Queue + Workflow.
-3. Execute implementation in Modal with coderunner.
+3. Execute implementation in Sprites with coderunner.
 4. Run verification commands based on target repo instructions.
 5. Push branch and open PR (`draft` or `ready` per run mode).
 6. Expose run status/logs for UI consumption.
@@ -84,6 +84,22 @@ Keep security logic isolated in `packages/security` to simplify replacement late
 2. Run lifecycle state is persisted and queryable.
 3. One local end-to-end path executes: submit run -> queue -> workflow -> implement -> verify -> PR.
 4. Documentation is updated when contracts/shape change.
+
+## Development Loop (Required)
+
+For implementation-plan execution work, use this loop until completion:
+
+1. Read the target plan doc and implement all acceptance criteria (not a subset).
+2. Update contracts, migrations, adapters, worker wiring, and docs together so behavior is coherent.
+3. Add/extend unit + integration coverage; add smoke/e2e coverage when station behavior changes.
+4. Run quality gates locally:
+   - `pnpm lint:check`
+   - `pnpm test`
+   - relevant smoke/e2e commands for touched surfaces
+5. Run local QA of the affected flow (API + queue + station artifacts/state validation).
+6. Open/update a PR from the working branch and ensure CI checks pass.
+7. Resolve all review feedback and BugBot comments; BugBot must be `pass` (not `neutral`).
+8. Repeat steps 2-7 until all checks are green and plan criteria are fully satisfied.
 
 ## Non-Goals (for v0)
 
