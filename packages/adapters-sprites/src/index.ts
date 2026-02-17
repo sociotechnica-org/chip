@@ -119,30 +119,42 @@ export function isRetryableSpritesError(error: unknown): error is SpritesClientE
   return error instanceof SpritesClientError && error.retryable;
 }
 
+function requireEnvValue(env: Record<string, string | undefined>, key: string): string {
+  const value = env[key]?.trim();
+  if (!value) {
+    throw new SpritesConfigError(`${key} is required`);
+  }
+
+  return value;
+}
+
+function parsePositiveInteger(value: string, key: string): number {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new SpritesConfigError(`${key} must be a positive integer`);
+  }
+
+  return parsed;
+}
+
+function parseTimeoutMs(rawTimeoutMs: string | undefined): number {
+  const timeoutValue = rawTimeoutMs?.trim();
+  if (!timeoutValue) {
+    return DEFAULT_TIMEOUT_MS;
+  }
+
+  return parsePositiveInteger(timeoutValue, "SPRITES_TIMEOUT_MS");
+}
+
 export function loadSpritesAuthConfigFromEnv(
   env: Record<string, string | undefined>
 ): SpritesAuthConfig {
-  const token = env.SPRITE_TOKEN?.trim();
-  if (!token) {
-    throw new SpritesConfigError("SPRITE_TOKEN is required");
-  }
-
-  const spriteName = env.SPRITE_NAME?.trim();
-  if (!spriteName) {
-    throw new SpritesConfigError("SPRITE_NAME is required");
-  }
+  const token = requireEnvValue(env, "SPRITE_TOKEN");
+  const spriteName = requireEnvValue(env, "SPRITE_NAME");
 
   const rawBaseUrl = env.SPRITES_API_BASE_URL?.trim();
   const apiBaseUrl = rawBaseUrl?.replace(/\/+$/, "") || DEFAULT_SPRITES_API_BASE_URL;
-
-  const rawTimeoutMs = env.SPRITES_TIMEOUT_MS?.trim();
-  const timeoutMs =
-    rawTimeoutMs && rawTimeoutMs.length > 0
-      ? Number.parseInt(rawTimeoutMs, 10)
-      : DEFAULT_TIMEOUT_MS;
-  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
-    throw new SpritesConfigError("SPRITES_TIMEOUT_MS must be a positive integer");
-  }
+  const timeoutMs = parseTimeoutMs(env.SPRITES_TIMEOUT_MS);
 
   return {
     token,
@@ -446,6 +458,78 @@ interface SessionListItem {
   isActive: boolean;
 }
 
+interface WebSocketRunState {
+  sessionId: string | null;
+  outputChunks: Uint8Array[];
+  exitCode: number | null;
+  providerErrorMessage: string | null;
+}
+
+function toWebSocketRunResult(state: WebSocketRunState, timedOut: boolean): WebSocketRunResult {
+  return {
+    sessionId: state.sessionId,
+    logsInline: decodeChunks(state.outputChunks),
+    exitCode: state.exitCode,
+    providerErrorMessage: state.providerErrorMessage,
+    timedOut
+  };
+}
+
+function updateStateFromControlPayload(state: WebSocketRunState, payload: string): boolean {
+  const parsed = extractControlPayload(payload);
+  if (!isRecord(parsed)) {
+    return false;
+  }
+
+  const parsedSessionId = parseSessionId(parsed.session_id);
+  if (parsedSessionId) {
+    state.sessionId = parsedSessionId;
+  }
+
+  const parsedExitCode = parseExitCode(parsed.exit_code);
+  if (parsedExitCode !== null) {
+    state.exitCode = parsedExitCode;
+  }
+
+  const errorMessage =
+    asNonEmptyString(parsed.error) ??
+    (isRecord(parsed.args) ? asNonEmptyString(parsed.args.error) : null);
+  if (errorMessage) {
+    state.providerErrorMessage = errorMessage;
+  }
+
+  const messageType = asNonEmptyString(parsed.type);
+  if (messageType === "exit" || messageType === "session_exited") {
+    return true;
+  }
+
+  return Boolean(state.providerErrorMessage);
+}
+
+function updateStateFromBinaryPayload(
+  state: WebSocketRunState,
+  binaryPayload: Uint8Array
+): boolean {
+  if (binaryPayload.length === 0) {
+    return false;
+  }
+
+  const streamId = binaryPayload[0];
+  const streamData = binaryPayload.subarray(1);
+
+  if (streamId === STREAM_ID_STDOUT || streamId === STREAM_ID_STDERR) {
+    state.outputChunks.push(new Uint8Array(streamData));
+    return false;
+  }
+
+  if (streamId === STREAM_ID_EXIT) {
+    state.exitCode = streamData.length > 0 ? streamData[0] : 0;
+    return true;
+  }
+
+  return false;
+}
+
 class SpritesWebSocketSession {
   private readonly socket: SpritesWebSocketLike;
   private readonly timeoutMs: number;
@@ -466,10 +550,12 @@ class SpritesWebSocketSession {
 
     return await new Promise<WebSocketRunResult>((resolve, reject) => {
       let completed = false;
-      let sessionId: string | null = null;
-      let exitCode: number | null = null;
-      let providerErrorMessage: string | null = null;
-      const outputChunks: Uint8Array[] = [];
+      const state: WebSocketRunState = {
+        sessionId: null,
+        outputChunks: [],
+        exitCode: null,
+        providerErrorMessage: null
+      };
 
       const finish = (result: WebSocketRunResult): void => {
         if (completed) {
@@ -502,13 +588,7 @@ class SpritesWebSocketSession {
       };
 
       const timeoutHandle = setTimeout(() => {
-        finish({
-          sessionId,
-          logsInline: decodeChunks(outputChunks),
-          exitCode,
-          providerErrorMessage,
-          timedOut: true
-        });
+        finish(toWebSocketRunResult(state, true));
       }, this.timeoutMs);
 
       this.socket.addEventListener("open", () => {
@@ -535,72 +615,19 @@ class SpritesWebSocketSession {
         const payload = messageEvent.data;
 
         if (typeof payload === "string") {
-          const parsed = extractControlPayload(payload);
-          if (isRecord(parsed)) {
-            const parsedSessionId = parseSessionId(parsed.session_id);
-            if (parsedSessionId) {
-              sessionId = parsedSessionId;
-            }
-
-            const parsedExitCode = parseExitCode(parsed.exit_code);
-            if (parsedExitCode !== null) {
-              exitCode = parsedExitCode;
-            }
-
-            const errorMessage =
-              asNonEmptyString(parsed.error) ??
-              (isRecord(parsed.args) ? asNonEmptyString(parsed.args.error) : null);
-            if (errorMessage) {
-              providerErrorMessage = errorMessage;
-            }
-
-            const messageType = asNonEmptyString(parsed.type);
-            if (messageType === "exit" || messageType === "session_exited") {
-              finish({
-                sessionId,
-                logsInline: decodeChunks(outputChunks),
-                exitCode,
-                providerErrorMessage,
-                timedOut: false
-              });
-              return;
-            }
-
-            if (providerErrorMessage) {
-              finish({
-                sessionId,
-                logsInline: decodeChunks(outputChunks),
-                exitCode,
-                providerErrorMessage,
-                timedOut: false
-              });
-            }
+          if (updateStateFromControlPayload(state, payload)) {
+            finish(toWebSocketRunResult(state, false));
           }
-
           return;
         }
 
         const binaryPayload = toUint8Array(payload);
-        if (!binaryPayload || binaryPayload.length === 0) {
+        if (!binaryPayload) {
           return;
         }
 
-        const streamId = binaryPayload[0];
-        const streamData = binaryPayload.subarray(1);
-        if (streamId === STREAM_ID_STDOUT || streamId === STREAM_ID_STDERR) {
-          outputChunks.push(new Uint8Array(streamData));
-          return;
-        }
-
-        if (streamId === STREAM_ID_EXIT) {
-          exitCode = streamData.length > 0 ? streamData[0] : 0;
-          finish({
-            sessionId,
-            logsInline: decodeChunks(outputChunks),
-            exitCode,
-            providerErrorMessage,
-            timedOut: false
-          });
+        if (updateStateFromBinaryPayload(state, binaryPayload)) {
+          finish(toWebSocketRunResult(state, false));
         }
       });
 
@@ -609,13 +636,7 @@ class SpritesWebSocketSession {
       });
 
       this.socket.addEventListener("close", () => {
-        finish({
-          sessionId,
-          logsInline: decodeChunks(outputChunks),
-          exitCode,
-          providerErrorMessage,
-          timedOut: false
-        });
+        finish(toWebSocketRunResult(state, false));
       });
     });
   }
@@ -780,21 +801,49 @@ class WebSocketSpritesExecutionTransport implements SpritesExecutionTransport {
     return headers;
   }
 
-  private async findSession(externalRef: string): Promise<SessionListItem | null> {
+  private buildSessionListUrl(): string {
     const url = new URL(
       `/v1/sprites/${encodeURIComponent(this.auth.spriteName)}/exec`,
       this.auth.apiBaseUrl
     );
     url.searchParams.set("inactive", "true");
     url.searchParams.set("limit", "200");
+    return url.toString();
+  }
 
+  private parseSessionListPayload(payload: unknown): SessionListItem[] {
+    if (!isRecord(payload) || !Array.isArray(payload.sessions)) {
+      throw new SpritesProviderError("Unexpected Sprites session list response");
+    }
+
+    const sessions: SessionListItem[] = [];
+    for (const session of payload.sessions) {
+      if (!isRecord(session)) {
+        continue;
+      }
+
+      const id = parseSessionId(session.id);
+      if (!id) {
+        continue;
+      }
+
+      sessions.push({
+        id,
+        isActive: Boolean(session.is_active)
+      });
+    }
+
+    return sessions;
+  }
+
+  private async fetchSessionList(): Promise<SessionListItem[]> {
     const controller = new AbortController();
     const timeoutHandle = setTimeout(() => {
       controller.abort();
     }, this.auth.timeoutMs);
 
     try {
-      const response = await this.fetchFn(url.toString(), {
+      const response = await this.fetchFn(this.buildSessionListUrl(), {
         method: "GET",
         headers: this.buildHeaders(undefined),
         signal: controller.signal
@@ -806,27 +855,7 @@ class WebSocketSpritesExecutionTransport implements SpritesExecutionTransport {
       }
 
       const payload = parsePossibleJson(rawBody);
-      if (!isRecord(payload) || !Array.isArray(payload.sessions)) {
-        throw new SpritesProviderError("Unexpected Sprites session list response");
-      }
-
-      for (const session of payload.sessions) {
-        if (!isRecord(session)) {
-          continue;
-        }
-
-        const id = parseSessionId(session.id);
-        if (!id || id !== externalRef) {
-          continue;
-        }
-
-        return {
-          id,
-          isActive: Boolean(session.is_active)
-        };
-      }
-
-      return null;
+      return this.parseSessionListPayload(payload);
     } catch (error) {
       if (error instanceof SpritesClientError) {
         throw error;
@@ -841,6 +870,17 @@ class WebSocketSpritesExecutionTransport implements SpritesExecutionTransport {
     } finally {
       clearTimeout(timeoutHandle);
     }
+  }
+
+  private async findSession(externalRef: string): Promise<SessionListItem | null> {
+    const sessions = await this.fetchSessionList();
+    for (const session of sessions) {
+      if (session.id === externalRef) {
+        return session;
+      }
+    }
+
+    return null;
   }
 }
 

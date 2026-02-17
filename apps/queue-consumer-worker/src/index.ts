@@ -16,6 +16,7 @@ import {
   type RunQueueMessage,
   type RunStatus,
   type StationExecutionMetadata,
+  type StationExecutionResponse,
   type StationExecutionResult,
   type StationName
 } from "@bob/core";
@@ -677,108 +678,191 @@ function executeSkeletonStation(
   };
 }
 
+function maybeSkipPreviouslyCompletedStation(
+  runId: string,
+  station: StationName,
+  stationExecution: StationExecutionRow | null
+): boolean {
+  if (stationExecution?.status === "succeeded") {
+    logEvent("station.skip.already_succeeded", {
+      runId,
+      station
+    });
+    return true;
+  }
+
+  if (stationExecution?.status === "failed") {
+    const reason = stationExecution.summary ?? `${station} failed in a previous attempt`;
+    throw new StationTerminalFailureError(station, reason);
+  }
+
+  return false;
+}
+
+async function startStationExecution(
+  env: Env,
+  runId: string,
+  station: StationName,
+  stationExecution: StationExecutionRow | null
+): Promise<{ startedAtMs: number }> {
+  const startedAt = stationExecution?.started_at ?? nowIso();
+  const startedAtMs = parseStationStartAtMs(stationExecution);
+
+  await updateRunCurrentStation(env, runId, station);
+  await markStationRunning(
+    env,
+    runId,
+    station,
+    startedAt,
+    stationExecution?.external_ref ?? null,
+    stationExecution?.metadata_json ?? null
+  );
+
+  logEvent("station.started", {
+    runId,
+    station,
+    resumed: stationExecution !== null
+  });
+
+  return { startedAtMs };
+}
+
+async function executeStationTask(
+  run: RunContextRow,
+  station: StationName,
+  stationExecution: StationExecutionRow | null,
+  adapter: CoderunnerAdapter
+): Promise<StationExecutionResponse> {
+  if (station === "implement") {
+    return executeImplementStation(run, stationExecution, adapter);
+  }
+
+  if (station === "verify") {
+    return executeVerifyStation(run, stationExecution, adapter);
+  }
+
+  return executeSkeletonStation(run, station);
+}
+
+async function persistInProgressStationResultAndThrow(
+  env: Env,
+  runId: string,
+  station: StationName,
+  executionResult: StationExecutionResponse
+): Promise<never> {
+  const externalRef = executionResult.externalRef;
+  if (!externalRef) {
+    throw new StationTerminalFailureError(
+      station,
+      `Station ${station} execution returned in-progress without external_ref`
+    );
+  }
+
+  await persistStationExternalState(
+    env,
+    runId,
+    station,
+    externalRef,
+    executionResult.metadata,
+    executionResult.summary
+  );
+
+  throw new RetryableStationExecutionError(
+    station,
+    `${station} execution still running; external_ref=${externalRef}`
+  );
+}
+
+function stationFailureSummary(
+  station: StationName,
+  executionResult: StationExecutionResult
+): string {
+  return `${station} ${executionResult.outcome}: ${executionResult.summary}`;
+}
+
+async function persistTerminalStationResult(
+  env: Env,
+  run: RunContextRow,
+  station: StationName,
+  startedAtMs: number,
+  executionResult: StationExecutionResult
+): Promise<void> {
+  const metadataJson = serializeMetadata(executionResult.metadata);
+  const externalRef = executionResult.externalRef ?? null;
+  const failureSummary = stationFailureSummary(station, executionResult);
+
+  if (executionResult.outcome === "succeeded") {
+    await markStationSucceeded(
+      env,
+      run.id,
+      station,
+      startedAtMs,
+      executionResult.summary,
+      externalRef,
+      metadataJson
+    );
+  } else {
+    await markStationFailed(env, run.id, station, failureSummary, externalRef, metadataJson);
+  }
+
+  if (station === "implement" || station === "verify") {
+    await persistExecutionArtifacts(env, run.id, station, executionResult);
+  } else {
+    await persistLightweightStationArtifact(env, run, station, executionResult);
+  }
+
+  if (executionResult.outcome !== "succeeded") {
+    throw new StationTerminalFailureError(station, failureSummary);
+  }
+
+  logEvent("station.succeeded", {
+    runId: run.id,
+    station,
+    externalRef
+  });
+}
+
+async function markStationFailedForUnexpectedError(
+  env: Env,
+  runId: string,
+  station: StationName,
+  error: unknown
+): Promise<never> {
+  const stationError = `Station ${station} execution error: ${errorMessage(error)}`;
+  try {
+    await markStationFailed(env, runId, station, stationError, null, null);
+  } catch (markError) {
+    logEvent("station.failed.mark_error", {
+      runId,
+      station,
+      error: errorMessage(markError)
+    });
+  }
+
+  throw new StationTerminalFailureError(station, stationError);
+}
+
 async function executeStation(
   env: Env,
   run: RunContextRow,
   station: StationName,
   adapter: CoderunnerAdapter
 ): Promise<void> {
-  const existingStationExecution = await getStationExecution(env, run.id, station);
-  if (existingStationExecution?.status === "succeeded") {
-    logEvent("station.skip.already_succeeded", {
-      runId: run.id,
-      station
-    });
+  const stationExecution = await getStationExecution(env, run.id, station);
+  if (maybeSkipPreviouslyCompletedStation(run.id, station, stationExecution)) {
     return;
   }
-  if (existingStationExecution?.status === "failed") {
-    const reason = existingStationExecution.summary ?? `${station} failed in a previous attempt`;
-    throw new StationTerminalFailureError(station, reason);
-  }
 
-  const startedAt = existingStationExecution?.started_at ?? nowIso();
-  const startedAtMs = parseStationStartAtMs(existingStationExecution);
-  await updateRunCurrentStation(env, run.id, station);
-  await markStationRunning(
-    env,
-    run.id,
-    station,
-    startedAt,
-    existingStationExecution?.external_ref ?? null,
-    existingStationExecution?.metadata_json ?? null
-  );
-
-  logEvent("station.started", {
-    runId: run.id,
-    station,
-    resumed: existingStationExecution !== null
-  });
+  const { startedAtMs } = await startStationExecution(env, run.id, station, stationExecution);
 
   const stopHeartbeatLoop = startRunHeartbeatLoop(env, run.id, station);
   try {
-    const executionResult =
-      station === "implement"
-        ? await executeImplementStation(run, existingStationExecution, adapter)
-        : station === "verify"
-          ? await executeVerifyStation(run, existingStationExecution, adapter)
-          : executeSkeletonStation(run, station);
-
+    const executionResult = await executeStationTask(run, station, stationExecution, adapter);
     if (!isTerminalStationExecutionResponse(executionResult)) {
-      await persistStationExternalState(
-        env,
-        run.id,
-        station,
-        executionResult.externalRef,
-        executionResult.metadata,
-        executionResult.summary
-      );
-      throw new RetryableStationExecutionError(
-        station,
-        `${station} execution still running; external_ref=${executionResult.externalRef}`
-      );
-    }
-
-    const metadataJson = serializeMetadata(executionResult.metadata);
-    const externalRef = executionResult.externalRef ?? null;
-    if (executionResult.outcome === "succeeded") {
-      await markStationSucceeded(
-        env,
-        run.id,
-        station,
-        startedAtMs,
-        executionResult.summary,
-        externalRef,
-        metadataJson
-      );
+      await persistInProgressStationResultAndThrow(env, run.id, station, executionResult);
     } else {
-      await markStationFailed(
-        env,
-        run.id,
-        station,
-        `${station} ${executionResult.outcome}: ${executionResult.summary}`,
-        externalRef,
-        metadataJson
-      );
+      await persistTerminalStationResult(env, run, station, startedAtMs, executionResult);
     }
-
-    if (station === "implement" || station === "verify") {
-      await persistExecutionArtifacts(env, run.id, station, executionResult);
-    } else {
-      await persistLightweightStationArtifact(env, run, station, executionResult);
-    }
-
-    if (executionResult.outcome !== "succeeded") {
-      throw new StationTerminalFailureError(
-        station,
-        `${station} ${executionResult.outcome}: ${executionResult.summary}`
-      );
-    }
-
-    logEvent("station.succeeded", {
-      runId: run.id,
-      station,
-      externalRef
-    });
   } catch (error) {
     if (
       error instanceof RetryableStationExecutionError ||
@@ -794,18 +878,7 @@ async function executeStation(
       );
     }
 
-    const stationError = `Station ${station} execution error: ${errorMessage(error)}`;
-    try {
-      await markStationFailed(env, run.id, station, stationError, null, null);
-    } catch (markError) {
-      logEvent("station.failed.mark_error", {
-        runId: run.id,
-        station,
-        error: errorMessage(markError)
-      });
-    }
-
-    throw new StationTerminalFailureError(station, stationError);
+    await markStationFailedForUnexpectedError(env, run.id, station, error);
   } finally {
     stopHeartbeatLoop();
   }
@@ -878,21 +951,28 @@ async function handleTerminalRunFailure(
   message.retry();
 }
 
-async function processQueueMessage(env: Env, message: Message<unknown>): Promise<void> {
+function parseQueuePayloadOrAck(message: Message<unknown>): RunQueueMessage | null {
   if (!isRunQueueMessage(message.body)) {
     logEvent("queue.message.invalid", {
       messageId: message.id
     });
     message.ack();
-    return;
+    return null;
   }
 
-  const payload: RunQueueMessage = message.body;
+  return message.body;
+}
+
+async function loadRunnableRunOrHandleTerminalState(
+  env: Env,
+  payload: RunQueueMessage,
+  message: Message<unknown>
+): Promise<{ run: RunExecutionRow; runStatus: RunStatus } | null> {
   const run = await getRunForExecution(env, payload.runId);
   if (!run) {
     logEvent("run.missing", { runId: payload.runId, messageId: message.id });
     message.ack();
-    return;
+    return null;
   }
 
   const runStatus = parseRunStatus(run.status);
@@ -903,7 +983,7 @@ async function processQueueMessage(env: Env, message: Message<unknown>): Promise
       status: run.status
     });
     message.ack();
-    return;
+    return null;
   }
 
   if (isTerminalRunStatus(runStatus)) {
@@ -913,115 +993,175 @@ async function processQueueMessage(env: Env, message: Message<unknown>): Promise
       status: runStatus
     });
     message.ack();
-    return;
+    return null;
   }
 
-  let startStationIndex = 0;
-  if (runStatus === "queued") {
-    const claimed = await claimQueuedRun(env, payload.runId);
-    if (!claimed) {
-      const latestRun = await getRunForExecution(env, payload.runId);
-      const latestStatus = latestRun ? parseRunStatus(latestRun.status) : null;
-      if (latestStatus && isTerminalRunStatus(latestStatus)) {
-        logEvent("run.claim.contended.terminal", {
-          runId: payload.runId,
-          messageId: message.id,
-          status: latestStatus
-        });
-        message.ack();
-        return;
-      }
+  return { run, runStatus };
+}
 
-      logEvent("run.claim.contended.retry", {
-        runId: payload.runId,
-        messageId: message.id
-      });
-      message.retry();
-      return;
-    }
-
+async function claimQueuedRunOrHandleContention(
+  env: Env,
+  payload: RunQueueMessage,
+  message: Message<unknown>
+): Promise<boolean> {
+  const claimed = await claimQueuedRun(env, payload.runId);
+  if (claimed) {
     logEvent("run.claimed", { runId: payload.runId, messageId: message.id });
-  } else if (runStatus === "running") {
-    if (!shouldResumeRunningRun(run)) {
-      logEvent("run.defer.running", {
-        runId: payload.runId,
-        messageId: message.id
-      });
-      message.retry();
-      return;
-    }
+    return true;
+  }
 
-    const claimedResume = await claimStaleRunningRun(env, run);
-    if (!claimedResume) {
-      logEvent("run.resume.claim_contended", {
-        runId: payload.runId,
-        messageId: message.id
-      });
-      message.retry();
-      return;
-    }
+  const latestRun = await getRunForExecution(env, payload.runId);
+  const latestStatus = latestRun ? parseRunStatus(latestRun.status) : null;
+  if (latestStatus && isTerminalRunStatus(latestStatus)) {
+    logEvent("run.claim.contended.terminal", {
+      runId: payload.runId,
+      messageId: message.id,
+      status: latestStatus
+    });
+    message.ack();
+    return false;
+  }
 
-    logEvent("run.resume.stale_running", {
+  logEvent("run.claim.contended.retry", {
+    runId: payload.runId,
+    messageId: message.id
+  });
+  message.retry();
+  return false;
+}
+
+async function claimStaleRunOrRetry(
+  env: Env,
+  payload: RunQueueMessage,
+  message: Message<unknown>,
+  run: RunExecutionRow
+): Promise<number | null> {
+  if (!shouldResumeRunningRun(run)) {
+    logEvent("run.defer.running", {
       runId: payload.runId,
       messageId: message.id
     });
+    message.retry();
+    return null;
+  }
 
-    const currentStation = asStationName(run.current_station);
-    if (currentStation) {
-      const currentStationStatus = await getStationExecutionStatus(
-        env,
-        payload.runId,
-        currentStation
-      );
-      startStationIndex = getResumeStationIndex(run, currentStationStatus);
-    }
-  } else {
-    logEvent("run.skip.unexpected_status", {
+  const claimedResume = await claimStaleRunningRun(env, run);
+  if (!claimedResume) {
+    logEvent("run.resume.claim_contended", {
       runId: payload.runId,
-      messageId: message.id,
-      status: runStatus
+      messageId: message.id
     });
-    message.ack();
+    message.retry();
+    return null;
+  }
+
+  logEvent("run.resume.stale_running", {
+    runId: payload.runId,
+    messageId: message.id
+  });
+
+  const currentStation = asStationName(run.current_station);
+  if (!currentStation) {
+    return 0;
+  }
+
+  const currentStationStatus = await getStationExecutionStatus(env, payload.runId, currentStation);
+  return getResumeStationIndex(run, currentStationStatus);
+}
+
+async function resolveStartStationIndex(
+  env: Env,
+  payload: RunQueueMessage,
+  message: Message<unknown>,
+  run: RunExecutionRow,
+  runStatus: RunStatus
+): Promise<number | null> {
+  if (runStatus === "queued") {
+    const claimed = await claimQueuedRunOrHandleContention(env, payload, message);
+    return claimed ? 0 : null;
+  }
+
+  if (runStatus === "running") {
+    return claimStaleRunOrRetry(env, payload, message, run);
+  }
+
+  logEvent("run.skip.unexpected_status", {
+    runId: payload.runId,
+    messageId: message.id,
+    status: runStatus
+  });
+  message.ack();
+  return null;
+}
+
+async function handleWorkflowExecutionError(
+  env: Env,
+  payload: RunQueueMessage,
+  message: Message<unknown>,
+  error: unknown
+): Promise<void> {
+  if (error instanceof RetryableStationExecutionError) {
+    logEvent("run.retry.station_in_progress", {
+      runId: payload.runId,
+      station: error.station,
+      reason: error.message
+    });
+    message.retry({
+      delaySeconds: IN_PROGRESS_RETRY_DELAY_SECONDS
+    });
+    return;
+  }
+
+  if (error instanceof StationTerminalFailureError) {
+    logEvent("run.failed.station_terminal", {
+      runId: payload.runId,
+      station: error.station,
+      reason: error.message
+    });
+    await handleTerminalRunFailure(env, payload.runId, error.station, error.message, message);
+    return;
+  }
+
+  const reason = `Workflow execution error: ${errorMessage(error)}`;
+  const latestRun = await getRunForExecution(env, payload.runId);
+  const failureStation = asStationName(latestRun?.current_station ?? null) ?? STATION_NAMES[0];
+
+  logEvent("run.failed.unexpected", {
+    runId: payload.runId,
+    station: failureStation,
+    reason
+  });
+
+  await handleTerminalRunFailure(env, payload.runId, failureStation, reason, message);
+}
+
+async function processQueueMessage(env: Env, message: Message<unknown>): Promise<void> {
+  const payload = parseQueuePayloadOrAck(message);
+  if (!payload) {
+    return;
+  }
+
+  const runnableRun = await loadRunnableRunOrHandleTerminalState(env, payload, message);
+  if (!runnableRun) {
+    return;
+  }
+
+  const startStationIndex = await resolveStartStationIndex(
+    env,
+    payload,
+    message,
+    runnableRun.run,
+    runnableRun.runStatus
+  );
+  if (startStationIndex === null) {
     return;
   }
 
   try {
-    await runWorkflowSkeleton(env, run.id, startStationIndex);
+    await runWorkflowSkeleton(env, runnableRun.run.id, startStationIndex);
     message.ack();
   } catch (error) {
-    if (error instanceof RetryableStationExecutionError) {
-      logEvent("run.retry.station_in_progress", {
-        runId: payload.runId,
-        station: error.station,
-        reason: error.message
-      });
-      message.retry({
-        delaySeconds: IN_PROGRESS_RETRY_DELAY_SECONDS
-      });
-      return;
-    }
-
-    if (error instanceof StationTerminalFailureError) {
-      logEvent("run.failed.station_terminal", {
-        runId: payload.runId,
-        station: error.station,
-        reason: error.message
-      });
-      await handleTerminalRunFailure(env, payload.runId, error.station, error.message, message);
-      return;
-    }
-
-    const reason = `Workflow execution error: ${errorMessage(error)}`;
-    const latestRun = await getRunForExecution(env, payload.runId);
-    const failureStation = asStationName(latestRun?.current_station ?? null) ?? STATION_NAMES[0];
-
-    logEvent("run.failed.unexpected", {
-      runId: payload.runId,
-      station: failureStation,
-      reason
-    });
-
-    await handleTerminalRunFailure(env, payload.runId, failureStation, reason, message);
+    await handleWorkflowExecutionError(env, payload, message, error);
   }
 }
 
