@@ -512,7 +512,8 @@ async function markStationFailed(
       duration_ms = excluded.duration_ms,
       summary = excluded.summary,
       external_ref = COALESCE(excluded.external_ref, station_executions.external_ref),
-      metadata_json = COALESCE(excluded.metadata_json, station_executions.metadata_json)`
+      metadata_json = COALESCE(excluded.metadata_json, station_executions.metadata_json)
+      WHERE station_executions.status = ?`
   )
     .bind(
       stationExecutionId(runId, station),
@@ -524,7 +525,8 @@ async function markStationFailed(
       durationMs,
       truncateSummary(reason),
       externalRef,
-      metadataJson
+      metadataJson,
+      "running"
     )
     .run();
 }

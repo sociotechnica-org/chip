@@ -193,7 +193,7 @@ describe("queue-consumer worker", () => {
     expect(adapter.runVerifyTask).not.toHaveBeenCalled();
   });
 
-  it("marks station failed when artifact persistence fails after terminal success", async () => {
+  it("keeps station succeeded when artifact persistence fails after terminal success", async () => {
     const { env, db } = createEnv(createSuccessAdapter());
     db.seedRun({
       id: "run_artifact_failure",
@@ -218,8 +218,9 @@ describe("queue-consumer worker", () => {
     expect(message.acked).toBe(true);
     expect(run?.status).toBe("failed");
     expect(run?.current_station).toBe("implement");
-    expect(implementStation?.status).toBe("failed");
-    expect(implementStation?.summary).toContain("Injected artifact write failure");
+    expect(run?.failure_reason).toContain("Injected artifact write failure");
+    expect(implementStation?.status).toBe("succeeded");
+    expect(implementStation?.summary).toContain("Implemented issue");
   });
 
   it("writes failed station execution rows for non-station workflow errors", async () => {
@@ -249,6 +250,64 @@ describe("queue-consumer worker", () => {
     expect(run?.current_station).toBe("intake");
     expect(intakeStation?.status).toBe("failed");
     expect(intakeStation?.summary).toContain("Workflow execution error");
+  });
+
+  it("preserves succeeded station rows when workflow failures target current_station", async () => {
+    const { env, db } = createEnv(createSuccessAdapter());
+    const staleAt = new Date(Date.now() - 90_000).toISOString();
+
+    db.seedRun({
+      id: "run_preserve_station_success",
+      status: "running",
+      repo_id: "missing_repo",
+      current_station: "plan",
+      started_at: staleAt,
+      heartbeat_at: staleAt
+    });
+    db.seedStationExecution({
+      id: "station_run_preserve_station_success_intake",
+      run_id: "run_preserve_station_success",
+      station: "intake",
+      status: "succeeded",
+      started_at: new Date(Date.now() - 120_000).toISOString(),
+      finished_at: new Date(Date.now() - 119_000).toISOString(),
+      duration_ms: 1_000,
+      summary: "intake done",
+      external_ref: null,
+      metadata_json: null
+    });
+    db.seedStationExecution({
+      id: "station_run_preserve_station_success_plan",
+      run_id: "run_preserve_station_success",
+      station: "plan",
+      status: "succeeded",
+      started_at: new Date(Date.now() - 118_000).toISOString(),
+      finished_at: new Date(Date.now() - 117_000).toISOString(),
+      duration_ms: 1_000,
+      summary: "plan done",
+      external_ref: null,
+      metadata_json: null
+    });
+
+    const message = createMessage(
+      "msg_preserve_station_success",
+      createBaseRunMessage("run_preserve_station_success")
+    );
+
+    await handleQueue(
+      {
+        messages: [message as unknown as Message<unknown>]
+      } as MessageBatch<unknown>,
+      env
+    );
+
+    const run = db.getRun("run_preserve_station_success");
+    const planStation = db.getStationExecution("run_preserve_station_success", "plan");
+    expect(message.acked).toBe(true);
+    expect(run?.status).toBe("failed");
+    expect(run?.current_station).toBe("plan");
+    expect(planStation?.status).toBe("succeeded");
+    expect(planStation?.summary).toBe("plan done");
   });
 
   it("resumes stale runs from current station without replaying succeeded stations", async () => {

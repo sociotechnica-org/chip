@@ -353,6 +353,13 @@ export class MockD1Database {
         return 1;
       }
 
+      if (sql.includes("where station_executions.status = ?")) {
+        const expectedStatus = asString(params[10]);
+        if (existing.status !== expectedStatus) {
+          return 0;
+        }
+      }
+
       existing.status = asString(params[3]);
       existing.started_at = existing.started_at ?? asNullableString(params[4]);
       existing.finished_at = asNullableString(params[5]);
