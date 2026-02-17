@@ -207,6 +207,57 @@ describe("WebSocket sprites transport", () => {
     expect(result.externalRef).toBe("sess_live");
   });
 
+  it("returns failed status for inactive sessions in getJobStatus", async () => {
+    const transport = createSpritesExecutionTransport({
+      auth,
+      fetchFn: vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ sessions: [{ id: "sess_done", is_active: false }] }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json"
+          }
+        })
+      )
+    });
+
+    const status = await transport.getJobStatus("sess_done");
+    expect(status.status).toBe("failed");
+    expect(status.metadata).toMatchObject({
+      sessionId: "sess_done",
+      isActive: false
+    });
+  });
+
+  it("returns terminal failure when attach fallback finds an inactive session", async () => {
+    const transport = createSpritesExecutionTransport({
+      auth,
+      fetchFn: vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ sessions: [{ id: "sess_done", is_active: false }] }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json"
+          }
+        })
+      ),
+      webSocketFactory: (url, init) => {
+        const socket = new MockWebSocket(url, init);
+        queueMicrotask(() => {
+          socket.open();
+          socket.message('{"error":"session not found: sess_done"}');
+        });
+        return socket;
+      }
+    });
+
+    const result = await transport.getJobResult("sess_done");
+    expect(result.status).toBe("failed");
+    expect(result.summary).toContain("inactive");
+    expect(result.metadata).toMatchObject({
+      sessionId: "sess_done",
+      isActive: false
+    });
+  });
+
   it("maps auth failures from session list lookup", async () => {
     const transport = createSpritesExecutionTransport({
       auth,

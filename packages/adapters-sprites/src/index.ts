@@ -34,7 +34,10 @@ interface SpritesWebSocketLike {
   close(code?: number, reason?: string): void;
 }
 
-type SpritesWebSocketFactory = (url: string, init: SpritesWebSocketInit) => SpritesWebSocketLike;
+type SpritesWebSocketFactory = (
+  url: string,
+  init: SpritesWebSocketInit
+) => SpritesWebSocketLike | Promise<SpritesWebSocketLike>;
 
 export interface SpritesAuthConfig {
   token: string;
@@ -177,6 +180,14 @@ function asNonEmptyString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function isPromiseLike<T>(value: unknown): value is PromiseLike<T> {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  return typeof (value as { then?: unknown }).then === "function";
+}
+
 function extractErrorMessage(payload: unknown): string {
   if (typeof payload === "string") {
     const trimmed = payload.trim();
@@ -248,6 +259,18 @@ function toWebSocketBaseUrl(apiBaseUrl: string): string {
   }
 
   throw new SpritesConfigError(`Unsupported SPRITES_API_BASE_URL: ${apiBaseUrl}`);
+}
+
+function toHttpUrlFromWebSocketUrl(url: string): string {
+  if (url.startsWith("wss://")) {
+    return `https://${url.slice("wss://".length)}`;
+  }
+
+  if (url.startsWith("ws://")) {
+    return `http://${url.slice("ws://".length)}`;
+  }
+
+  return url;
 }
 
 function shellQuote(value: string): string {
@@ -424,24 +447,91 @@ function decodeChunks(chunks: Uint8Array[]): string {
 }
 
 function defaultWebSocketFactory(url: string, init: SpritesWebSocketInit): SpritesWebSocketLike {
-  if (typeof WebSocket !== "function") {
+  if (typeof WebSocket === "function") {
+    const WebSocketCtor = WebSocket as unknown as {
+      new (url: string, options?: unknown, maybeOptions?: unknown): SpritesWebSocketLike;
+    };
+
+    try {
+      return new WebSocketCtor(url, {
+        headers: init.headers
+      });
+    } catch {
+      try {
+        return new WebSocketCtor(url, [], {
+          headers: init.headers
+        });
+      } catch {
+        // Fall through to fetch-upgrade path below.
+      }
+    }
+  }
+
+  if (typeof fetch !== "function") {
     throw new SpritesConfigError("WebSocket runtime support is required for Sprites transport");
   }
 
-  const WebSocketCtor = WebSocket as unknown as {
-    new (url: string, protocols?: unknown): SpritesWebSocketLike;
-  };
+  throw new SpritesConfigError(
+    "Direct WebSocket constructor does not support authenticated Sprites connections in this runtime. Provide a custom webSocketFactory."
+  );
+}
+
+async function openWebSocketViaFetchUpgrade(
+  fetchFn: FetchLike,
+  url: string,
+  init: SpritesWebSocketInit,
+  timeoutMs: number
+): Promise<SpritesWebSocketLike> {
+  const controller = new AbortController();
+  const timeoutHandle = setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
 
   try {
-    return new WebSocketCtor(url, {
-      headers: init.headers
+    const response = await fetchFn(toHttpUrlFromWebSocketUrl(url), {
+      method: "GET",
+      headers: {
+        ...init.headers,
+        upgrade: "websocket"
+      },
+      signal: controller.signal
     });
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw mapHttpError(response.status, parsePossibleJson(body));
+    }
+
+    const upgraded = response as Response & { webSocket?: SpritesWebSocketLike | null };
+    const socket = upgraded.webSocket;
+    if (!socket) {
+      throw new SpritesConfigError(
+        "Sprites websocket upgrade response did not include a websocket"
+      );
+    }
+
+    const socketWithAccept = socket as unknown as { accept?: () => void };
+    if (typeof socketWithAccept.accept === "function") {
+      socketWithAccept.accept();
+    }
+
+    return socket;
   } catch (error) {
+    if (error instanceof SpritesClientError) {
+      throw error;
+    }
+
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new SpritesRetryableTransportError("Sprites websocket connection timed out");
+    }
+
     throw new SpritesConfigError(
       `Unable to initialize Sprites WebSocket client: ${
         error instanceof Error ? error.message : String(error)
       }`
     );
+  } finally {
+    clearTimeout(timeoutHandle);
   }
 }
 
@@ -456,6 +546,10 @@ interface WebSocketRunResult {
 interface SessionListItem {
   id: string;
   isActive: boolean;
+}
+
+function statusFromSessionActivity(session: SessionListItem): SpritesJobStatus {
+  return session.isActive ? "running" : "failed";
 }
 
 interface WebSocketRunState {
@@ -550,6 +644,7 @@ class SpritesWebSocketSession {
 
     return await new Promise<WebSocketRunResult>((resolve, reject) => {
       let completed = false;
+      let stdinSent = false;
       const state: WebSocketRunState = {
         sessionId: null,
         outputChunks: [],
@@ -587,18 +682,15 @@ class SpritesWebSocketSession {
         reject(error);
       };
 
-      const timeoutHandle = setTimeout(() => {
-        finish(toWebSocketRunResult(state, true));
-      }, this.timeoutMs);
-
-      this.socket.addEventListener("open", () => {
-        if (!this.sendStdinPayload) {
+      const sendStdinIfPossible = (): void => {
+        if (stdinSent || !this.sendStdinPayload || this.socket.readyState !== 1) {
           return;
         }
 
         try {
           this.socket.send(buildStdinFrame(this.sendStdinPayload));
           this.socket.send(buildStdinEofFrame());
+          stdinSent = true;
         } catch (error) {
           fail(
             new SpritesRetryableTransportError(
@@ -608,6 +700,14 @@ class SpritesWebSocketSession {
             )
           );
         }
+      };
+
+      const timeoutHandle = setTimeout(() => {
+        finish(toWebSocketRunResult(state, true));
+      }, this.timeoutMs);
+
+      this.socket.addEventListener("open", () => {
+        sendStdinIfPossible();
       });
 
       this.socket.addEventListener("message", (event) => {
@@ -638,6 +738,9 @@ class SpritesWebSocketSession {
       this.socket.addEventListener("close", () => {
         finish(toWebSocketRunResult(state, false));
       });
+
+      // Workerd websocket sockets created from fetch upgrades are already open and do not emit "open".
+      sendStdinIfPossible();
     });
   }
 }
@@ -706,7 +809,7 @@ class WebSocketSpritesExecutionTransport implements SpritesExecutionTransport {
 
     return {
       externalRef,
-      status: session.isActive ? "running" : "running",
+      status: statusFromSessionActivity(session),
       metadata: {
         sessionId: externalRef,
         isActive: session.isActive
@@ -725,10 +828,22 @@ class WebSocketSpritesExecutionTransport implements SpritesExecutionTransport {
       if (/session not found/i.test(providerError.message)) {
         const listed = await this.findSession(externalRef);
         if (listed) {
+          if (listed.isActive) {
+            return {
+              externalRef,
+              status: "running",
+              summary: "Sprites session is pending attach",
+              metadata: {
+                sessionId: externalRef,
+                isActive: listed.isActive
+              }
+            };
+          }
+
           return {
             externalRef,
-            status: "running",
-            summary: "Sprites session is pending attach",
+            status: "failed",
+            summary: "Sprites session is inactive and attach is unavailable",
             metadata: {
               sessionId: externalRef,
               isActive: listed.isActive
@@ -781,11 +896,31 @@ class WebSocketSpritesExecutionTransport implements SpritesExecutionTransport {
     url: string;
     stdinPayload: Uint8Array | null;
   }): Promise<WebSocketRunResult> {
-    const socket = this.webSocketFactory(input.url, {
-      headers: {
-        authorization: `Bearer ${this.auth.token}`
+    let socket: SpritesWebSocketLike;
+    try {
+      const maybeSocket = this.webSocketFactory(input.url, {
+        headers: {
+          authorization: `Bearer ${this.auth.token}`
+        }
+      });
+      socket = isPromiseLike<SpritesWebSocketLike>(maybeSocket) ? await maybeSocket : maybeSocket;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/does not support authenticated sprites connections/i.test(message)) {
+        throw error;
       }
-    });
+
+      socket = await openWebSocketViaFetchUpgrade(
+        this.fetchFn,
+        input.url,
+        {
+          headers: {
+            authorization: `Bearer ${this.auth.token}`
+          }
+        },
+        this.auth.timeoutMs
+      );
+    }
 
     return new SpritesWebSocketSession({
       socket,
