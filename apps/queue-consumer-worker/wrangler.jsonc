@@ -15,8 +15,7 @@
     "consumers": [
       {
         "queue": "bob-runs",
-        "max_retries": 120,
-        "retry_delay": 15
+        "max_retries": 120
       }
     ]
   },

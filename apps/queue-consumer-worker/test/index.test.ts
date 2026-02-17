@@ -9,8 +9,9 @@ interface MockQueueMessage {
   body: unknown;
   acked: boolean;
   retries: number;
+  retryOptions: QueueRetryOptions | null;
   ack: () => void;
-  retry: () => void;
+  retry: (options?: QueueRetryOptions) => void;
 }
 
 function createMessage(id: string, body: unknown): MockQueueMessage {
@@ -19,11 +20,13 @@ function createMessage(id: string, body: unknown): MockQueueMessage {
     body,
     acked: false,
     retries: 0,
+    retryOptions: null,
     ack() {
       this.acked = true;
     },
-    retry() {
+    retry(options?: QueueRetryOptions) {
       this.retries += 1;
+      this.retryOptions = options ?? null;
     }
   };
 }
@@ -556,6 +559,7 @@ describe("queue-consumer worker", () => {
 
     expect(firstMessage.acked).toBe(false);
     expect(firstMessage.retries).toBe(1);
+    expect(firstMessage.retryOptions?.delaySeconds).toBe(15);
     expect(db.getRun("run_progress")?.status).toBe("running");
 
     const runningImplement = db.getStationExecution("run_progress", "implement");
@@ -634,6 +638,7 @@ describe("queue-consumer worker", () => {
 
     expect(message.acked).toBe(false);
     expect(message.retries).toBe(1);
+    expect(message.retryOptions?.delaySeconds).toBe(15);
     expect(db.getRun("run_retryable_error")?.status).toBe("running");
     expect(db.getStationExecution("run_retryable_error", "implement")?.status).toBe("running");
   });
