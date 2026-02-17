@@ -11,8 +11,7 @@ import {
   type ModalJobStatus,
   type ModalJobStatusResult,
   type StationExecutionMetadata,
-  type StationExecutionResponse,
-  type StationExecutionResult
+  type StationExecutionResponse
 } from "@bob/core";
 import { createModalExecutionTransportFromEnv, isRetryableModalError } from "@bob/adapters-modal";
 
@@ -230,11 +229,21 @@ class ClaudeCodeRunner implements CoderunnerAdapter {
     return [base, repo, issue, configPath, goal].filter((value) => value.length > 0).join(" ");
   }
 
-  private toTerminalResult(
+  private toExecutionResponse(
     phase: ExecutionPhase,
     input: CoderunnerTaskInput,
     result: ModalJobResult
-  ): StationExecutionResult {
+  ): StationExecutionResponse {
+    const metadata = this.buildMetadata(phase, input, result.status);
+    if (!isTerminalModalJobStatus(result.status)) {
+      return {
+        outcome: null,
+        summary: `${phase} execution still ${result.status}`,
+        externalRef: result.externalRef,
+        metadata
+      };
+    }
+
     const outcome = mapModalStatusToOutcome(result.status);
     const summaryPrefix = phase === "implement" ? "Implement" : "Verify";
     const summary =
@@ -246,7 +255,7 @@ class ClaudeCodeRunner implements CoderunnerAdapter {
       summary,
       logsInline: result.logsInline,
       externalRef: result.externalRef,
-      metadata: this.buildMetadata(phase, input, result.status)
+      metadata
     };
   }
 
@@ -282,7 +291,7 @@ class ClaudeCodeRunner implements CoderunnerAdapter {
 
     try {
       const result = await this.transport!.getJobResult(submit.externalRef);
-      return this.toTerminalResult(phase, input, result);
+      return this.toExecutionResponse(phase, input, result);
     } catch (error) {
       if (isRetryableModalError(error)) {
         return {
@@ -314,7 +323,7 @@ class ClaudeCodeRunner implements CoderunnerAdapter {
     }
 
     const result = await this.transport!.getJobResult(externalRef);
-    return this.toTerminalResult(phase, input, result);
+    return this.toExecutionResponse(phase, input, result);
   }
 
   private runMockTask(phase: ExecutionPhase, input: CoderunnerTaskInput): StationExecutionResponse {

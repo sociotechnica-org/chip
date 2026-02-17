@@ -303,6 +303,98 @@ describe("queue-consumer worker", () => {
     expect(intakeRows).toHaveLength(1);
   });
 
+  it("does not rerun stations already marked failed", async () => {
+    const runImplementTask = vi.fn(async () => ({
+      outcome: "succeeded",
+      summary: "should not run",
+      metadata: {
+        phase: "implement",
+        mode: "mock",
+        attempt: 1
+      }
+    }));
+
+    const adapter: CoderunnerAdapter = {
+      runImplementTask,
+      runVerifyTask: vi.fn(async () => ({
+        outcome: "succeeded",
+        summary: "verify",
+        metadata: {
+          phase: "verify",
+          mode: "mock",
+          attempt: 1
+        }
+      }))
+    };
+
+    const { env, db } = createEnv(adapter);
+    db.seedRun({
+      id: "run_failed_station_resume",
+      status: "running",
+      current_station: "implement",
+      started_at: new Date(Date.now() - 90_000).toISOString(),
+      heartbeat_at: new Date(Date.now() - 90_000).toISOString()
+    });
+    db.seedStationExecution({
+      id: "station_run_failed_station_resume_intake",
+      run_id: "run_failed_station_resume",
+      station: "intake",
+      status: "succeeded",
+      started_at: new Date(Date.now() - 120_000).toISOString(),
+      finished_at: new Date(Date.now() - 119_000).toISOString(),
+      duration_ms: 1_000,
+      summary: "intake done",
+      external_ref: null,
+      metadata_json: null
+    });
+    db.seedStationExecution({
+      id: "station_run_failed_station_resume_plan",
+      run_id: "run_failed_station_resume",
+      station: "plan",
+      status: "succeeded",
+      started_at: new Date(Date.now() - 118_000).toISOString(),
+      finished_at: new Date(Date.now() - 117_000).toISOString(),
+      duration_ms: 1_000,
+      summary: "plan done",
+      external_ref: null,
+      metadata_json: null
+    });
+    db.seedStationExecution({
+      id: "station_run_failed_station_resume_implement",
+      run_id: "run_failed_station_resume",
+      station: "implement",
+      status: "failed",
+      started_at: new Date(Date.now() - 116_000).toISOString(),
+      finished_at: new Date(Date.now() - 115_000).toISOString(),
+      duration_ms: 1_000,
+      summary: "implement failed previously",
+      external_ref: "job_failed",
+      metadata_json: JSON.stringify({
+        phase: "implement",
+        mode: "modal",
+        attempt: 1,
+        providerStatus: "failed"
+      })
+    });
+
+    const message = createMessage(
+      "msg_failed_station_resume",
+      createBaseRunMessage("run_failed_station_resume")
+    );
+
+    await handleQueue(
+      {
+        messages: [message as unknown as Message<unknown>]
+      } as MessageBatch<unknown>,
+      env
+    );
+
+    expect(message.acked).toBe(true);
+    expect(runImplementTask).not.toHaveBeenCalled();
+    expect(db.getRun("run_failed_station_resume")?.status).toBe("failed");
+    expect(db.getStationExecution("run_failed_station_resume", "implement")?.status).toBe("failed");
+  });
+
   it("uses external_ref resume context instead of starting duplicate execution", async () => {
     const runImplementTask = vi.fn(async (input: CoderunnerTaskInput) => {
       expect(input.resume?.externalRef).toBe("job_existing");

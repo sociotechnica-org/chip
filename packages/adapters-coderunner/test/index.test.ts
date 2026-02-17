@@ -116,6 +116,31 @@ describe("coderunner adapter", () => {
     expect(result.logsInline).toBe("modal logs");
   });
 
+  it("treats nonterminal modal result payloads as in-progress", async () => {
+    const { transport, submitJob, getJobResult } = createTransport();
+    submitJob.mockResolvedValue({
+      externalRef: "job_result_pending",
+      status: "succeeded"
+    });
+    getJobResult.mockResolvedValue({
+      externalRef: "job_result_pending",
+      status: "running",
+      summary: "still running"
+    });
+
+    const adapter = createCoderunnerAdapter({
+      mode: "modal",
+      modalTransport: transport,
+      claudeCodeApiKey: "claude-key"
+    });
+
+    const result = await adapter.runImplementTask(createTaskInput());
+
+    expect(result.outcome).toBeNull();
+    expect(result.externalRef).toBe("job_result_pending");
+    expect(result.summary).toContain("still running");
+  });
+
   it("returns in-progress response when terminal submit result fetch is retryable", async () => {
     const { transport, submitJob, getJobResult } = createTransport();
     submitJob.mockResolvedValue({

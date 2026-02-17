@@ -688,6 +688,10 @@ async function executeStation(
     });
     return;
   }
+  if (existingStationExecution?.status === "failed") {
+    const reason = existingStationExecution.summary ?? `${station} failed in a previous attempt`;
+    throw new StationTerminalFailureError(station, reason);
+  }
 
   const startedAt = existingStationExecution?.started_at ?? nowIso();
   const startedAtMs = parseStationStartAtMs(existingStationExecution);
