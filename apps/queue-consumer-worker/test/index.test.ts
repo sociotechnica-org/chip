@@ -190,6 +190,64 @@ describe("queue-consumer worker", () => {
     expect(adapter.runVerifyTask).not.toHaveBeenCalled();
   });
 
+  it("marks station failed when artifact persistence fails after terminal success", async () => {
+    const { env, db } = createEnv(createSuccessAdapter());
+    db.seedRun({
+      id: "run_artifact_failure",
+      status: "queued"
+    });
+    db.failArtifactWriteForType("implement_summary");
+
+    const message = createMessage(
+      "msg_artifact_failure",
+      createBaseRunMessage("run_artifact_failure")
+    );
+
+    await handleQueue(
+      {
+        messages: [message as unknown as Message<unknown>]
+      } as MessageBatch<unknown>,
+      env
+    );
+
+    const run = db.getRun("run_artifact_failure");
+    const implementStation = db.getStationExecution("run_artifact_failure", "implement");
+    expect(message.acked).toBe(true);
+    expect(run?.status).toBe("failed");
+    expect(run?.current_station).toBe("implement");
+    expect(implementStation?.status).toBe("failed");
+    expect(implementStation?.summary).toContain("Injected artifact write failure");
+  });
+
+  it("writes failed station execution rows for non-station workflow errors", async () => {
+    const { env, db } = createEnv(createSuccessAdapter());
+    db.seedRun({
+      id: "run_missing_context",
+      status: "queued",
+      repo_id: "missing_repo"
+    });
+
+    const message = createMessage(
+      "msg_missing_context",
+      createBaseRunMessage("run_missing_context")
+    );
+
+    await handleQueue(
+      {
+        messages: [message as unknown as Message<unknown>]
+      } as MessageBatch<unknown>,
+      env
+    );
+
+    const run = db.getRun("run_missing_context");
+    const intakeStation = db.getStationExecution("run_missing_context", "intake");
+    expect(message.acked).toBe(true);
+    expect(run?.status).toBe("failed");
+    expect(run?.current_station).toBe("intake");
+    expect(intakeStation?.status).toBe("failed");
+    expect(intakeStation?.summary).toContain("Workflow execution error");
+  });
+
   it("resumes stale runs from current station without replaying succeeded stations", async () => {
     const adapter = createSuccessAdapter();
     const { env, db } = createEnv(adapter);

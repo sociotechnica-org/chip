@@ -482,19 +482,48 @@ async function markStationFailed(
   externalRef: string | null,
   metadataJson: string | null
 ): Promise<void> {
+  const existing = await getStationExecution(env, runId, station);
+  const finishedAtMs = Date.now();
+  const finishedAt = new Date(finishedAtMs).toISOString();
+  const startedAt = existing?.started_at ?? finishedAt;
+  const parsedStartedAtMs = Date.parse(startedAt);
+  const startedAtMs = Number.isNaN(parsedStartedAtMs) ? finishedAtMs : parsedStartedAtMs;
+  const durationMs = Math.max(1, finishedAtMs - startedAtMs);
+
   await env.DB.prepare(
-    `UPDATE station_executions
-     SET status = ?, finished_at = ?, summary = ?, external_ref = COALESCE(?, external_ref), metadata_json = COALESCE(?, metadata_json)
-     WHERE id = ? AND status = ?`
+    `INSERT INTO station_executions (
+      id,
+      run_id,
+      station,
+      status,
+      started_at,
+      finished_at,
+      duration_ms,
+      summary,
+      external_ref,
+      metadata_json
+     )
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+      status = excluded.status,
+      started_at = COALESCE(station_executions.started_at, excluded.started_at),
+      finished_at = excluded.finished_at,
+      duration_ms = excluded.duration_ms,
+      summary = excluded.summary,
+      external_ref = COALESCE(excluded.external_ref, station_executions.external_ref),
+      metadata_json = COALESCE(excluded.metadata_json, station_executions.metadata_json)`
   )
     .bind(
+      stationExecutionId(runId, station),
+      runId,
+      station,
       "failed",
-      nowIso(),
+      startedAt,
+      finishedAt,
+      durationMs,
       truncateSummary(reason),
       externalRef,
-      metadataJson,
-      stationExecutionId(runId, station),
-      "running"
+      metadataJson
     )
     .run();
 }
@@ -760,14 +789,7 @@ async function executeStation(
 
     const stationError = `Station ${station} execution error: ${errorMessage(error)}`;
     try {
-      await markStationFailed(
-        env,
-        run.id,
-        station,
-        stationError,
-        existingStationExecution?.external_ref ?? null,
-        existingStationExecution?.metadata_json ?? null
-      );
+      await markStationFailed(env, run.id, station, stationError, null, null);
     } catch (markError) {
       logEvent("station.failed.mark_error", {
         runId: run.id,
@@ -813,6 +835,16 @@ async function handleTerminalRunFailure(
   reason: string,
   message: Message<unknown>
 ): Promise<void> {
+  try {
+    await markStationFailed(env, runId, station, reason, null, null);
+  } catch (error) {
+    logEvent("run.failed.station_mark_error", {
+      runId,
+      station,
+      error: errorMessage(error)
+    });
+  }
+
   let markedFailed = false;
   try {
     markedFailed = await markRunFailed(env, runId, station, reason);

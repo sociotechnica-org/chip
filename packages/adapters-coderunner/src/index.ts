@@ -280,8 +280,21 @@ class ClaudeCodeRunner implements CoderunnerAdapter {
       };
     }
 
-    const result = await this.transport!.getJobResult(submit.externalRef);
-    return this.toTerminalResult(phase, input, result);
+    try {
+      const result = await this.transport!.getJobResult(submit.externalRef);
+      return this.toTerminalResult(phase, input, result);
+    } catch (error) {
+      if (isRetryableModalError(error)) {
+        return {
+          outcome: null,
+          summary: `${phase} execution result fetch retryable; will resume from external_ref=${submit.externalRef}`,
+          externalRef: submit.externalRef,
+          metadata
+        };
+      }
+
+      throw error;
+    }
   }
 
   private async resumeModalTask(

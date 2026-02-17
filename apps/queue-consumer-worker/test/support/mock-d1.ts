@@ -80,6 +80,7 @@ export class MockD1Database {
   private readonly runs: RunRow[] = [];
   private readonly stationExecutions: StationExecutionRow[] = [];
   private readonly artifacts: ArtifactRow[] = [];
+  private readonly failArtifactTypes: Set<string> = new Set();
 
   public prepare(sql: string): D1PreparedStatement {
     return new MockD1PreparedStatement(this, normalizeSql(sql)) as unknown as D1PreparedStatement;
@@ -145,6 +146,10 @@ export class MockD1Database {
 
   public listArtifacts(runId: string): ArtifactRow[] {
     return this.artifacts.filter((row) => row.run_id === runId);
+  }
+
+  public failArtifactWriteForType(type: string): void {
+    this.failArtifactTypes.add(type);
   }
 
   public first(sql: string, params: unknown[]): unknown {
@@ -445,12 +450,16 @@ export class MockD1Database {
 
     if (sql.startsWith("insert into artifacts") && sql.includes("on conflict(id) do update set")) {
       const id = asString(params[0]);
+      const type = asString(params[2]);
+      if (this.failArtifactTypes.has(type)) {
+        throw new Error(`Injected artifact write failure for ${type}`);
+      }
       const existing = this.artifacts.find((artifact) => artifact.id === id);
       if (!existing) {
         this.artifacts.push({
           id,
           run_id: asString(params[1]),
-          type: asString(params[2]),
+          type,
           storage: asString(params[3]),
           payload: asNullableString(params[4]),
           created_at: asString(params[5])

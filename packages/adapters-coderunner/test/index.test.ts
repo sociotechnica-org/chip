@@ -116,6 +116,29 @@ describe("coderunner adapter", () => {
     expect(result.logsInline).toBe("modal logs");
   });
 
+  it("returns in-progress response when terminal submit result fetch is retryable", async () => {
+    const { transport, submitJob, getJobResult } = createTransport();
+    submitJob.mockResolvedValue({
+      externalRef: "job_terminal_retryable",
+      status: "succeeded"
+    });
+    getJobResult.mockRejectedValue(new ModalRetryableTransportError("temporary fetch failure"));
+
+    const adapter = createCoderunnerAdapter({
+      mode: "modal",
+      modalTransport: transport,
+      claudeCodeApiKey: "claude-key"
+    });
+
+    const result = await adapter.runImplementTask(createTaskInput());
+
+    expect(result.outcome).toBeNull();
+    expect(result.externalRef).toBe("job_terminal_retryable");
+    expect(result.summary).toContain("result fetch retryable");
+    expect(submitJob).toHaveBeenCalledOnce();
+    expect(getJobResult).toHaveBeenCalledOnce();
+  });
+
   it("resumes existing external refs instead of creating a new submission", async () => {
     const { transport, submitJob, getJobStatus } = createTransport();
     getJobStatus.mockResolvedValue({
