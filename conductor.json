@@ -1,6 +1,6 @@
 {
   "scripts": {
-    "setup": "pnpm setup",
+    "setup": "pnpm run setup",
     "run": "pnpm dev"
   },
   "runScriptMode": "nonconcurrent"
