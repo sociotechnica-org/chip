@@ -1,6 +1,6 @@
-# AGENT.md
+# AGENTS.md
 
-This file defines baseline guidance for agents working in `bob-the-builder`.
+This file defines baseline guidance for agents working in `chip`.
 
 ## Mission
 
@@ -57,6 +57,7 @@ docs/
 3. Persist and log station transitions (`queued -> running -> terminal states`).
 4. Default to draft PRs unless run instructions explicitly request ready-for-review.
 5. Keep scope tight to v0 outcomes; avoid speculative platforming.
+6. Always run `pnpm lint-all` before committing to catch lint/typecheck/formatting issues early.
 
 ## MVP Workflow Contract
 
