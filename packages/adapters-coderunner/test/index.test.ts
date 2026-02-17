@@ -156,10 +156,10 @@ describe("coderunner adapter", () => {
     expect(getJobResult).toHaveBeenCalledOnce();
   });
 
-  it("increments metadata attempt when resumed metadata exists", async () => {
-    const { transport, submitJob } = createTransport();
-    submitJob.mockResolvedValue({
-      externalRef: "job_2",
+  it("resumes existing external refs before submitting new sprites jobs", async () => {
+    const { transport, submitJob, getJobResult } = createTransport();
+    getJobResult.mockResolvedValue({
+      externalRef: "old_job",
       status: "succeeded",
       summary: "ok"
     });
@@ -192,6 +192,60 @@ describe("coderunner adapter", () => {
       phase: "implement",
       mode: "sprites"
     });
+    expect(getJobResult).toHaveBeenCalledWith("old_job");
+    expect(submitJob).not.toHaveBeenCalled();
+  });
+
+  it("returns in-progress response when resume fetch is retryable", async () => {
+    const { transport, submitJob, getJobResult } = createTransport();
+    getJobResult.mockRejectedValue(new SpritesRetryableTransportError("temporary"));
+
+    const adapter = createCoderunnerAdapter({
+      mode: "sprites",
+      spritesTransport: transport,
+      claudeCodeApiKey: "claude-key"
+    });
+
+    const result = await adapter.runImplementTask(
+      createTaskInput({
+        resume: {
+          externalRef: "old_job",
+          metadata: {
+            phase: "implement",
+            mode: "sprites",
+            attempt: 1
+          }
+        }
+      })
+    );
+
+    expect(result.outcome).toBeNull();
+    expect(result.externalRef).toBe("old_job");
+    expect(result.summary).toContain("resume fetch retryable");
+    expect(submitJob).not.toHaveBeenCalled();
+  });
+
+  it("shell-quotes goal text in sprites command", async () => {
+    const { transport, submitJob } = createTransport();
+    submitJob.mockResolvedValue({
+      externalRef: "job_quoted",
+      status: "running"
+    });
+
+    const adapter = createCoderunnerAdapter({
+      mode: "sprites",
+      spritesTransport: transport,
+      claudeCodeApiKey: "claude-key"
+    });
+
+    await adapter.runImplementTask(
+      createTaskInput({
+        goal: "ship $(touch /tmp/pwned) and `echo hacked`"
+      })
+    );
+
+    const submitInput = submitJob.mock.calls[0]?.[0] as { command: string } | undefined;
+    expect(submitInput?.command).toContain("'ship $(touch /tmp/pwned) and `echo hacked`'");
   });
 
   it("classifies retryable sprites errors", async () => {

@@ -124,6 +124,10 @@ function parseMockOutcome(phase: ExecutionPhase, goal: string | null): Execution
   return "succeeded";
 }
 
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
 class ClaudeCodeRunner implements CoderunnerAdapter {
   private readonly mode: CoderunnerMode;
   private readonly transport: SpritesExecutionTransport | null;
@@ -177,8 +181,10 @@ class ClaudeCodeRunner implements CoderunnerAdapter {
       }
 
       if (isRetryableSpritesError(error)) {
+        const statusSuffix =
+          typeof error.statusCode === "number" ? ` (status=${error.statusCode})` : "";
         throw new CoderunnerError({
-          message: `Sprites transport retryable error during ${phase}`,
+          message: `Sprites transport retryable error during ${phase}: ${error.message}${statusSuffix}`,
           retryable: true,
           code: "transport_retryable",
           cause: error
@@ -219,12 +225,21 @@ class ClaudeCodeRunner implements CoderunnerAdapter {
   }
 
   private buildSpritesCommand(phase: ExecutionPhase, input: CoderunnerTaskInput): string {
-    const base = `claude-code ${phase}`;
-    const repo = `--repo ${input.repo.owner}/${input.repo.name}`;
-    const issue = `--issue ${input.issueNumber}`;
-    const configPath = `--config-path ${input.repo.configPath}`;
-    const goal = input.goal ? `--goal ${JSON.stringify(input.goal)}` : "";
-    return [base, repo, issue, configPath, goal].filter((value) => value.length > 0).join(" ");
+    const args = [
+      "claude-code",
+      phase,
+      "--repo",
+      `${input.repo.owner}/${input.repo.name}`,
+      "--issue",
+      String(input.issueNumber),
+      "--config-path",
+      input.repo.configPath
+    ];
+    if (input.goal) {
+      args.push("--goal", input.goal);
+    }
+
+    return args.map((value) => shellQuote(value)).join(" ");
   }
 
   private toExecutionResponse(
@@ -236,7 +251,7 @@ class ClaudeCodeRunner implements CoderunnerAdapter {
     if (!isTerminalSpritesJobStatus(result.status)) {
       return {
         outcome: null,
-        summary: `${phase} execution still ${result.status}`,
+        summary: result.summary || `${phase} execution still ${result.status}`,
         externalRef: result.externalRef,
         metadata
       };
@@ -261,6 +276,24 @@ class ClaudeCodeRunner implements CoderunnerAdapter {
     phase: ExecutionPhase,
     input: CoderunnerTaskInput
   ): Promise<StationExecutionResponse> {
+    if (input.resume?.externalRef) {
+      try {
+        const resumedResult = await this.transport!.getJobResult(input.resume.externalRef);
+        return this.toExecutionResponse(phase, input, resumedResult);
+      } catch (error) {
+        if (isRetryableSpritesError(error)) {
+          return {
+            outcome: null,
+            summary: `${phase} execution resume fetch retryable; will continue polling external_ref=${input.resume.externalRef}`,
+            externalRef: input.resume.externalRef,
+            metadata: this.buildMetadata(phase, input, "running")
+          };
+        }
+
+        throw error;
+      }
+    }
+
     const submit = await this.transport!.submitJob({
       phase,
       runId: input.runId,

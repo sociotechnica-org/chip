@@ -9,9 +9,32 @@ import {
 
 const DEFAULT_SPRITES_API_BASE_URL = "https://api.sprites.dev";
 const DEFAULT_TIMEOUT_MS = 30_000;
-const MAX_CACHED_RESULTS = 128;
+const STREAM_ID_STDIN = 0;
+const STREAM_ID_STDOUT = 1;
+const STREAM_ID_STDERR = 2;
+const STREAM_ID_EXIT = 3;
+const STREAM_ID_STDIN_EOF = 4;
+const ENV_SENTINEL = "__SPRITES_ENV_DONE__";
+const CONTROL_PREFIX = "control:";
 
 type FetchLike = typeof fetch;
+
+type SpritesWebSocketInit = {
+  headers: Record<string, string>;
+};
+
+interface SpritesWebSocketLike {
+  binaryType: string;
+  readyState: number;
+  addEventListener(
+    type: "open" | "message" | "error" | "close",
+    listener: (event: unknown) => void
+  ): void;
+  send(data: string | ArrayBuffer | Uint8Array): void;
+  close(code?: number, reason?: string): void;
+}
+
+type SpritesWebSocketFactory = (url: string, init: SpritesWebSocketInit) => SpritesWebSocketLike;
 
 export interface SpritesAuthConfig {
   token: string;
@@ -23,6 +46,7 @@ export interface SpritesAuthConfig {
 export interface CreateSpritesExecutionTransportInput {
   auth: SpritesAuthConfig;
   fetchFn?: FetchLike;
+  webSocketFactory?: SpritesWebSocketFactory;
 }
 
 export class SpritesClientError extends Error {
@@ -91,7 +115,7 @@ export class SpritesProviderError extends SpritesClientError {
   }
 }
 
-export function isRetryableSpritesError(error: unknown): boolean {
+export function isRetryableSpritesError(error: unknown): error is SpritesClientError {
   return error instanceof SpritesClientError && error.retryable;
 }
 
@@ -198,43 +222,153 @@ function parsePossibleJson(rawBody: string): unknown {
   }
 }
 
-function buildExecUrl(auth: SpritesAuthConfig, input: SpritesSubmitJobInput): string {
-  const url = new URL(`/v1/sprites/${encodeURIComponent(auth.spriteName)}/exec`, auth.apiBaseUrl);
+function toWebSocketBaseUrl(apiBaseUrl: string): string {
+  if (apiBaseUrl.startsWith("https://")) {
+    return `wss://${apiBaseUrl.slice("https://".length)}`;
+  }
+
+  if (apiBaseUrl.startsWith("http://")) {
+    return `ws://${apiBaseUrl.slice("http://".length)}`;
+  }
+
+  if (apiBaseUrl.startsWith("wss://") || apiBaseUrl.startsWith("ws://")) {
+    return apiBaseUrl;
+  }
+
+  throw new SpritesConfigError(`Unsupported SPRITES_API_BASE_URL: ${apiBaseUrl}`);
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+function buildLauncherCommand(command: string): string {
+  if (command.trim().length === 0) {
+    throw new SpritesProviderError("Sprites command must not be empty");
+  }
+
+  const escapedCommand = shellQuote(command);
+  return [
+    "set -eu",
+    "while IFS= read -r __sprites_env_line; do",
+    `  if [ "$__sprites_env_line" = "${ENV_SENTINEL}" ]; then break; fi`,
+    '  export "$__sprites_env_line"',
+    "done",
+    `exec sh -lc ${escapedCommand}`
+  ].join("; ");
+}
+
+function buildNewSessionUrl(auth: SpritesAuthConfig, launcherCommand: string): string {
+  const url = new URL(
+    `/v1/sprites/${encodeURIComponent(auth.spriteName)}/exec`,
+    toWebSocketBaseUrl(auth.apiBaseUrl)
+  );
   url.searchParams.append("cmd", "sh");
   url.searchParams.append("cmd", "-lc");
-  url.searchParams.append("cmd", input.command);
+  url.searchParams.append("cmd", launcherCommand);
   url.searchParams.set("path", "sh");
+  url.searchParams.set("stdin", "true");
+  url.searchParams.set("cc", "true");
+  url.searchParams.set("detachable", "true");
+  return url.toString();
+}
 
-  const env = input.env ?? {};
-  for (const key of Object.keys(env).sort()) {
-    const value = env[key];
+function buildAttachSessionUrl(auth: SpritesAuthConfig, sessionId: string): string {
+  const url = new URL(
+    `/v1/sprites/${encodeURIComponent(auth.spriteName)}/exec`,
+    toWebSocketBaseUrl(auth.apiBaseUrl)
+  );
+  url.searchParams.set("id", sessionId);
+  url.searchParams.set("stdin", "true");
+  url.searchParams.set("cc", "true");
+  return url.toString();
+}
+
+function parseSessionId(raw: unknown): string | null {
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    return String(raw);
+  }
+
+  return null;
+}
+
+function parseExitCode(raw: unknown): number | null {
+  if (typeof raw === "number" && Number.isInteger(raw) && raw >= 0) {
+    return raw;
+  }
+
+  if (typeof raw === "string") {
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+  }
+
+  return null;
+}
+
+function extractControlPayload(data: string): unknown {
+  const body = data.startsWith(CONTROL_PREFIX) ? data.slice(CONTROL_PREFIX.length) : data;
+  try {
+    return JSON.parse(body);
+  } catch {
+    return data;
+  }
+}
+
+function toUint8Array(data: unknown): Uint8Array | null {
+  if (typeof ArrayBuffer !== "undefined" && data instanceof ArrayBuffer) {
+    return new Uint8Array(data);
+  }
+
+  if (ArrayBuffer.isView(data)) {
+    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  }
+
+  if (typeof Buffer !== "undefined" && data instanceof Buffer) {
+    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  }
+
+  return null;
+}
+
+function buildStdinFrame(payload: Uint8Array): Uint8Array {
+  const frame = new Uint8Array(payload.length + 1);
+  frame[0] = STREAM_ID_STDIN;
+  frame.set(payload, 1);
+  return frame;
+}
+
+function buildStdinEofFrame(): Uint8Array {
+  return new Uint8Array([STREAM_ID_STDIN_EOF]);
+}
+
+function encodeEnvPayload(env: Record<string, string> | undefined): Uint8Array {
+  const lines: string[] = [];
+  for (const key of Object.keys(env ?? {}).sort()) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(key)) {
+      throw new SpritesProviderError(`Invalid environment variable key: ${key}`);
+    }
+
+    const value = env?.[key];
     if (typeof value !== "string") {
       continue;
     }
 
-    url.searchParams.append("env", `${key}=${value}`);
+    if (value.includes("\n") || value.includes("\r") || value.includes("\u0000")) {
+      throw new SpritesProviderError(
+        `Environment variable ${key} contains unsupported newline or null characters`
+      );
+    }
+
+    lines.push(`${key}=${value}`);
   }
 
-  return url.toString();
-}
-
-function buildExternalRef(input: SpritesSubmitJobInput): string {
-  const phase = input.phase.replace(/[^a-z0-9_]/gi, "_");
-  const run = input.runId.replace(/[^a-z0-9_]/gi, "_");
-  return `sprites_${run}_${phase}_${Date.now().toString(36)}`;
-}
-
-function extractExitCode(headers: Headers): number | null {
-  const raw =
-    headers.get("x-exit-code") ??
-    headers.get("x-sprite-exit-code") ??
-    headers.get("x-process-exit-code");
-  if (!raw) {
-    return null;
-  }
-
-  const parsed = Number.parseInt(raw, 10);
-  return Number.isInteger(parsed) ? parsed : null;
+  lines.push(ENV_SENTINEL);
+  return new TextEncoder().encode(`${lines.join("\n")}\n`);
 }
 
 function summarizeExecution(
@@ -257,108 +391,411 @@ function summarizeExecution(
   return firstLine ?? "Sprites command failed";
 }
 
-interface ExecResponse {
-  statusCode: number;
-  bodyText: string;
-  headers: Headers;
+function decodeChunks(chunks: Uint8Array[]): string {
+  if (chunks.length === 0) {
+    return "";
+  }
+
+  let totalLength = 0;
+  for (const chunk of chunks) {
+    totalLength += chunk.length;
+  }
+
+  const merged = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.length;
+  }
+
+  return new TextDecoder().decode(merged);
 }
 
-class HttpSpritesExecutionTransport implements SpritesExecutionTransport {
+function defaultWebSocketFactory(url: string, init: SpritesWebSocketInit): SpritesWebSocketLike {
+  if (typeof WebSocket !== "function") {
+    throw new SpritesConfigError("WebSocket runtime support is required for Sprites transport");
+  }
+
+  const WebSocketCtor = WebSocket as unknown as {
+    new (url: string, protocols?: unknown): SpritesWebSocketLike;
+  };
+
+  try {
+    return new WebSocketCtor(url, {
+      headers: init.headers
+    });
+  } catch (error) {
+    throw new SpritesConfigError(
+      `Unable to initialize Sprites WebSocket client: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+  }
+}
+
+interface WebSocketRunResult {
+  sessionId: string | null;
+  logsInline: string;
+  exitCode: number | null;
+  providerErrorMessage: string | null;
+  timedOut: boolean;
+}
+
+interface SessionListItem {
+  id: string;
+  isActive: boolean;
+}
+
+class SpritesWebSocketSession {
+  private readonly socket: SpritesWebSocketLike;
+  private readonly timeoutMs: number;
+  private readonly sendStdinPayload: Uint8Array | null;
+
+  public constructor(input: {
+    socket: SpritesWebSocketLike;
+    timeoutMs: number;
+    sendStdinPayload: Uint8Array | null;
+  }) {
+    this.socket = input.socket;
+    this.timeoutMs = input.timeoutMs;
+    this.sendStdinPayload = input.sendStdinPayload;
+  }
+
+  public async run(): Promise<WebSocketRunResult> {
+    this.socket.binaryType = "arraybuffer";
+
+    return await new Promise<WebSocketRunResult>((resolve, reject) => {
+      let completed = false;
+      let sessionId: string | null = null;
+      let exitCode: number | null = null;
+      let providerErrorMessage: string | null = null;
+      const outputChunks: Uint8Array[] = [];
+
+      const finish = (result: WebSocketRunResult): void => {
+        if (completed) {
+          return;
+        }
+
+        completed = true;
+        clearTimeout(timeoutHandle);
+        try {
+          this.socket.close(1000, "");
+        } catch {
+          // no-op
+        }
+        resolve(result);
+      };
+
+      const fail = (error: Error): void => {
+        if (completed) {
+          return;
+        }
+
+        completed = true;
+        clearTimeout(timeoutHandle);
+        try {
+          this.socket.close(1011, "");
+        } catch {
+          // no-op
+        }
+        reject(error);
+      };
+
+      const timeoutHandle = setTimeout(() => {
+        finish({
+          sessionId,
+          logsInline: decodeChunks(outputChunks),
+          exitCode,
+          providerErrorMessage,
+          timedOut: true
+        });
+      }, this.timeoutMs);
+
+      this.socket.addEventListener("open", () => {
+        if (!this.sendStdinPayload) {
+          return;
+        }
+
+        try {
+          this.socket.send(buildStdinFrame(this.sendStdinPayload));
+          this.socket.send(buildStdinEofFrame());
+        } catch (error) {
+          fail(
+            new SpritesRetryableTransportError(
+              `Failed to send Sprites stdin payload: ${
+                error instanceof Error ? error.message : String(error)
+              }`
+            )
+          );
+        }
+      });
+
+      this.socket.addEventListener("message", (event) => {
+        const messageEvent = event as { data?: unknown };
+        const payload = messageEvent.data;
+
+        if (typeof payload === "string") {
+          const parsed = extractControlPayload(payload);
+          if (isRecord(parsed)) {
+            const parsedSessionId = parseSessionId(parsed.session_id);
+            if (parsedSessionId) {
+              sessionId = parsedSessionId;
+            }
+
+            const parsedExitCode = parseExitCode(parsed.exit_code);
+            if (parsedExitCode !== null) {
+              exitCode = parsedExitCode;
+            }
+
+            const errorMessage =
+              asNonEmptyString(parsed.error) ??
+              (isRecord(parsed.args) ? asNonEmptyString(parsed.args.error) : null);
+            if (errorMessage) {
+              providerErrorMessage = errorMessage;
+            }
+
+            const messageType = asNonEmptyString(parsed.type);
+            if (messageType === "exit" || messageType === "session_exited") {
+              finish({
+                sessionId,
+                logsInline: decodeChunks(outputChunks),
+                exitCode,
+                providerErrorMessage,
+                timedOut: false
+              });
+              return;
+            }
+
+            if (providerErrorMessage) {
+              finish({
+                sessionId,
+                logsInline: decodeChunks(outputChunks),
+                exitCode,
+                providerErrorMessage,
+                timedOut: false
+              });
+            }
+          }
+
+          return;
+        }
+
+        const binaryPayload = toUint8Array(payload);
+        if (!binaryPayload || binaryPayload.length === 0) {
+          return;
+        }
+
+        const streamId = binaryPayload[0];
+        const streamData = binaryPayload.subarray(1);
+        if (streamId === STREAM_ID_STDOUT || streamId === STREAM_ID_STDERR) {
+          outputChunks.push(new Uint8Array(streamData));
+          return;
+        }
+
+        if (streamId === STREAM_ID_EXIT) {
+          exitCode = streamData.length > 0 ? streamData[0] : 0;
+          finish({
+            sessionId,
+            logsInline: decodeChunks(outputChunks),
+            exitCode,
+            providerErrorMessage,
+            timedOut: false
+          });
+        }
+      });
+
+      this.socket.addEventListener("error", () => {
+        fail(new SpritesRetryableTransportError("Sprites websocket request failed"));
+      });
+
+      this.socket.addEventListener("close", () => {
+        finish({
+          sessionId,
+          logsInline: decodeChunks(outputChunks),
+          exitCode,
+          providerErrorMessage,
+          timedOut: false
+        });
+      });
+    });
+  }
+}
+
+class WebSocketSpritesExecutionTransport implements SpritesExecutionTransport {
   private readonly fetchFn: FetchLike;
   private readonly auth: SpritesAuthConfig;
-  private readonly resultsByRef = new Map<string, SpritesJobResult>();
+  private readonly webSocketFactory: SpritesWebSocketFactory;
 
   public constructor(input: CreateSpritesExecutionTransportInput) {
-    this.fetchFn = input.fetchFn ?? fetch;
+    this.fetchFn =
+      input.fetchFn ?? ((resource: RequestInfo | URL, init?: RequestInit) => fetch(resource, init));
     this.auth = input.auth;
+    this.webSocketFactory = input.webSocketFactory ?? defaultWebSocketFactory;
   }
 
   public async submitJob(input: SpritesSubmitJobInput): Promise<SpritesExecutionHandle> {
-    const externalRef = buildExternalRef(input);
-    const response = await this.executeCommand(input);
+    const launcherCommand = buildLauncherCommand(input.command);
+    const session = await this.runSession({
+      url: buildNewSessionUrl(this.auth, launcherCommand),
+      stdinPayload: encodeEnvPayload(input.env)
+    });
 
-    const logsInline = response.bodyText;
-    const exitCode = extractExitCode(response.headers);
-    const status: SpritesJobStatus =
-      exitCode !== null ? (exitCode === 0 ? "succeeded" : "failed") : "succeeded";
-    const summary = summarizeExecution(status, logsInline, exitCode);
+    if (session.providerErrorMessage) {
+      throw this.mapWebSocketProviderError(session.providerErrorMessage);
+    }
+
+    if (!session.sessionId) {
+      throw new SpritesProviderError("Sprites did not return a session_id for submitted command");
+    }
 
     const metadata: Record<string, unknown> = {
       ...((input.metadata as Record<string, unknown> | undefined) ?? {}),
-      statusCode: response.statusCode,
-      exitCode: exitCode ?? undefined
+      sessionId: session.sessionId,
+      timedOut: session.timedOut
     };
 
-    const result: SpritesJobResult = {
-      externalRef,
-      status,
-      summary,
-      logsInline: logsInline.length > 0 ? logsInline : undefined,
-      metadata
-    };
+    if (session.exitCode === null) {
+      return {
+        externalRef: session.sessionId,
+        status: "running",
+        summary: "Sprites command is still running",
+        metadata
+      };
+    }
 
-    this.cacheResult(result);
-
+    const status: SpritesJobStatus = session.exitCode === 0 ? "succeeded" : "failed";
+    const summary = summarizeExecution(status, session.logsInline, session.exitCode);
     return {
-      externalRef,
+      externalRef: session.sessionId,
       status,
       summary,
-      logsInline: result.logsInline,
-      metadata
+      logsInline: session.logsInline.length > 0 ? session.logsInline : undefined,
+      metadata: {
+        ...metadata,
+        exitCode: session.exitCode
+      }
     };
   }
 
   public async getJobStatus(externalRef: string): Promise<SpritesJobStatusResult> {
-    const result = this.resultsByRef.get(externalRef);
-    if (!result) {
+    const session = await this.findSession(externalRef);
+    if (!session) {
       throw new SpritesProviderError(`Unknown Sprites external_ref: ${externalRef}`);
     }
 
     return {
       externalRef,
-      status: result.status,
-      metadata: result.metadata
+      status: session.isActive ? "running" : "running",
+      metadata: {
+        sessionId: externalRef,
+        isActive: session.isActive
+      }
     };
   }
 
   public async getJobResult(externalRef: string): Promise<SpritesJobResult> {
-    const result = this.resultsByRef.get(externalRef);
-    if (!result) {
-      throw new SpritesProviderError(`Unknown Sprites external_ref: ${externalRef}`);
-    }
+    const session = await this.runSession({
+      url: buildAttachSessionUrl(this.auth, externalRef),
+      stdinPayload: null
+    });
 
-    return result;
-  }
+    if (session.providerErrorMessage) {
+      const providerError = this.mapWebSocketProviderError(session.providerErrorMessage);
+      if (/session not found/i.test(providerError.message)) {
+        const listed = await this.findSession(externalRef);
+        if (listed) {
+          return {
+            externalRef,
+            status: "running",
+            summary: "Sprites session is pending attach",
+            metadata: {
+              sessionId: externalRef,
+              isActive: listed.isActive
+            }
+          };
+        }
 
-  private cacheResult(result: SpritesJobResult): void {
-    this.resultsByRef.set(result.externalRef, result);
-    while (this.resultsByRef.size > MAX_CACHED_RESULTS) {
-      const oldestRef = this.resultsByRef.keys().next().value;
-      if (typeof oldestRef !== "string") {
-        break;
+        throw new SpritesProviderError(`Unknown Sprites external_ref: ${externalRef}`);
       }
 
-      this.resultsByRef.delete(oldestRef);
+      throw providerError;
     }
+
+    const resolvedSessionId = session.sessionId ?? externalRef;
+    if (session.exitCode === null) {
+      return {
+        externalRef: resolvedSessionId,
+        status: "running",
+        summary: "Sprites command is still running",
+        logsInline: session.logsInline.length > 0 ? session.logsInline : undefined,
+        metadata: {
+          sessionId: resolvedSessionId,
+          timedOut: session.timedOut
+        }
+      };
+    }
+
+    const status: SpritesJobStatus = session.exitCode === 0 ? "succeeded" : "failed";
+    return {
+      externalRef: resolvedSessionId,
+      status,
+      summary: summarizeExecution(status, session.logsInline, session.exitCode),
+      logsInline: session.logsInline.length > 0 ? session.logsInline : undefined,
+      metadata: {
+        sessionId: resolvedSessionId,
+        exitCode: session.exitCode
+      }
+    };
+  }
+
+  private mapWebSocketProviderError(message: string): SpritesClientError {
+    if (/auth/i.test(message)) {
+      return new SpritesAuthError(message);
+    }
+
+    return new SpritesProviderError(message);
+  }
+
+  private async runSession(input: {
+    url: string;
+    stdinPayload: Uint8Array | null;
+  }): Promise<WebSocketRunResult> {
+    const socket = this.webSocketFactory(input.url, {
+      headers: {
+        authorization: `Bearer ${this.auth.token}`
+      }
+    });
+
+    return new SpritesWebSocketSession({
+      socket,
+      timeoutMs: this.auth.timeoutMs,
+      sendStdinPayload: input.stdinPayload
+    }).run();
   }
 
   private buildHeaders(extra: HeadersInit | undefined): Headers {
     const headers = new Headers(extra ?? undefined);
-    headers.set("accept", "application/octet-stream, application/json");
+    headers.set("accept", "application/json");
     headers.set("authorization", `Bearer ${this.auth.token}`);
     return headers;
   }
 
-  private async executeCommand(input: SpritesSubmitJobInput): Promise<ExecResponse> {
-    const timeout = this.auth.timeoutMs;
+  private async findSession(externalRef: string): Promise<SessionListItem | null> {
+    const url = new URL(
+      `/v1/sprites/${encodeURIComponent(this.auth.spriteName)}/exec`,
+      this.auth.apiBaseUrl
+    );
+    url.searchParams.set("inactive", "true");
+    url.searchParams.set("limit", "200");
+
     const controller = new AbortController();
     const timeoutHandle = setTimeout(() => {
       controller.abort();
-    }, timeout);
+    }, this.auth.timeoutMs);
 
     try {
-      const response = await this.fetchFn(buildExecUrl(this.auth, input), {
-        method: "POST",
+      const response = await this.fetchFn(url.toString(), {
+        method: "GET",
         headers: this.buildHeaders(undefined),
         signal: controller.signal
       });
@@ -368,11 +805,28 @@ class HttpSpritesExecutionTransport implements SpritesExecutionTransport {
         throw mapHttpError(response.status, parsePossibleJson(rawBody));
       }
 
-      return {
-        statusCode: response.status,
-        bodyText: rawBody,
-        headers: response.headers
-      };
+      const payload = parsePossibleJson(rawBody);
+      if (!isRecord(payload) || !Array.isArray(payload.sessions)) {
+        throw new SpritesProviderError("Unexpected Sprites session list response");
+      }
+
+      for (const session of payload.sessions) {
+        if (!isRecord(session)) {
+          continue;
+        }
+
+        const id = parseSessionId(session.id);
+        if (!id || id !== externalRef) {
+          continue;
+        }
+
+        return {
+          id,
+          isActive: Boolean(session.is_active)
+        };
+      }
+
+      return null;
     } catch (error) {
       if (error instanceof SpritesClientError) {
         throw error;
@@ -393,16 +847,17 @@ class HttpSpritesExecutionTransport implements SpritesExecutionTransport {
 export function createSpritesExecutionTransport(
   input: CreateSpritesExecutionTransportInput
 ): SpritesExecutionTransport {
-  return new HttpSpritesExecutionTransport(input);
+  return new WebSocketSpritesExecutionTransport(input);
 }
 
 export function createSpritesExecutionTransportFromEnv(
   env: Record<string, string | undefined>,
-  options: Pick<CreateSpritesExecutionTransportInput, "fetchFn"> = {}
+  options: Pick<CreateSpritesExecutionTransportInput, "fetchFn" | "webSocketFactory"> = {}
 ): SpritesExecutionTransport {
   const auth = loadSpritesAuthConfigFromEnv(env);
   return createSpritesExecutionTransport({
     auth,
-    fetchFn: options.fetchFn
+    fetchFn: options.fetchFn,
+    webSocketFactory: options.webSocketFactory
   });
 }
