@@ -92,13 +92,13 @@ Production-complete additions:
 2. `POST /v1/runs/:id/retry` (or equivalent operator replay endpoint)
 3. artifact/log retrieval endpoints if run detail payload becomes too large
 
-1. PR1: Monorepo scaffold, tooling, core types, password middleware.
-2. PR2: D1 schema + repo/run API + queue producer.
-3. PR3: Queue consumer + Workflow skeleton + station persistence.
-4. PR4: Sprites adapter + OpenCode runner adapter.
-5. PR5: GitHub adapter + PR creation station.
-6. PR6: Vite web dashboard (runs list/detail/artifacts).
-7. PR7: Hardening (retries, cancel, R2 artifacts, test coverage uplift).
+4. PR1: Monorepo scaffold, tooling, core types, password middleware.
+5. PR2: D1 schema + repo/run API + queue producer.
+6. PR3: Queue consumer + Workflow skeleton + station persistence.
+7. PR4: Sprites adapter + OpenCode runner adapter.
+8. PR5: GitHub adapter + PR creation station.
+9. PR6: Vite web dashboard (runs list/detail/artifacts).
+10. PR7: Hardening (retries, cancel, R2 artifacts, test coverage uplift).
 
 ## 8. Current Implementation Status (as of 2026-02-17, assuming GitHub PR #5 merges soon)
 
