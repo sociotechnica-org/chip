@@ -6,7 +6,7 @@
   "packageManager": "pnpm@10.8.1",
   "scripts": {
     "setup": "pnpm install && pnpm migrate",
-    "migrate": "pnpm --filter @bob/control-worker exec wrangler d1 migrations apply DB --local --config wrangler.jsonc --persist-to ../../.wrangler-state",
+    "migrate": "CI=true pnpm --filter @bob/control-worker exec wrangler d1 migrations apply DB --local --config wrangler.jsonc --persist-to ../../.wrangler-state",
     "reset": "pnpm reset:state && pnpm setup",
     "reset:state": "rm -rf .wrangler-state apps/control-worker/.wrangler apps/queue-consumer-worker/.wrangler",
     "dev": "pnpm migrate && pnpm dev:all",

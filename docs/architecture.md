@@ -41,7 +41,7 @@ For v0, the platform is scoped to one target repository: `sociotechnica-org/life
 - Per-run realtime state mirror.
 - Provides websocket-friendly run status/event stream to the web UI.
 
-### Modal Execution Layer
+### Sprites Execution Layer
 
 - Runs repository implementation and verification inside VM sandboxes.
 - Hosts coderunner invocation (`claude-code` first in v0).
@@ -58,7 +58,7 @@ For v0, the platform is scoped to one target repository: `sociotechnica-org/life
 - `packages/core`: domain types, enums, state machine contracts.
 - `packages/config`: `.bob/factory.yaml` schema and loader.
 - `packages/adapters-github`: issue, branch, and PR API operations.
-- `packages/adapters-modal`: Modal API client and job orchestration.
+- `packages/adapters-sprites`: Sprites API client and job orchestration.
 - `packages/adapters-coderunner`: pluggable runner interface and implementations.
 - `packages/observability`: structured logging and trace/event contracts.
 - `packages/security`: shared password middleware + cookie/session helpers.
@@ -99,7 +99,7 @@ Primary persistent data lives in Cloudflare D1.
 4. Workflow executes ordered stations:
    - `intake`: read issue context and snapshot artifacts
    - `plan`: generate implementation plan artifact
-   - `implement`: Modal VM + coderunner execution on work branch
+   - `implement`: Sprites VM + coderunner execution on work branch
    - `verify`: run repo checks from target repo instructions
    - `create_pr`: push branch and open draft/ready PR
 5. Workflow updates D1 and Agent state throughout execution.
@@ -123,7 +123,7 @@ This is isolated in `packages/security` so it can be replaced with stronger auth
 - Create branch, commit/push changes, and open PR.
 - Auth uses `GITHUB_TOKEN` (PAT) in v0.
 
-### Modal
+### Sprites
 
 - Provision execution VM.
 - Run coderunner and verify commands.
@@ -144,16 +144,18 @@ Implementations:
 
 1. `GITHUB_TOKEN`
 2. `BOB_PASSWORD`
-3. `MODAL_TOKEN_ID`
-4. `MODAL_TOKEN_SECRET`
-5. `CLAUDE_CODE_API_KEY`
+3. `SPRITE_TOKEN`
+4. `SPRITE_NAME`
+5. `SPRITES_API_BASE_URL` (optional)
+6. `SPRITES_TIMEOUT_MS` (optional)
+7. `CLAUDE_CODE_API_KEY`
 
 ## Planned Delivery Slices
 
 1. PR1: scaffold + tooling + core + security
 2. PR2: D1 schema + repo/run API + queue producer
 3. PR3: queue consumer + workflow skeleton + station persistence
-4. PR4: Modal adapter + Claude Code integration
+4. PR4: Sprites adapter + Claude Code integration
 5. PR5: GitHub adapter + PR station
 6. PR6: web dashboard
 7. PR7: hardening (retry/cancel/artifacts/tests)
