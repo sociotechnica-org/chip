@@ -4,6 +4,12 @@ import {
   type CoderunnerEnv
 } from "@bob/adapters-coderunner";
 import {
+  createGitHubAdapterFromEnv,
+  isRetryableGitHubError,
+  type GitHubAdapter,
+  type GitHubAdapterEnv
+} from "@bob/adapters-github";
+import {
   STATION_NAMES,
   isPrMode,
   isRunQueueMessage,
@@ -21,10 +27,12 @@ import {
   type StationName
 } from "@bob/core";
 
-export interface Env extends CoderunnerEnv {
+export interface Env extends CoderunnerEnv, GitHubAdapterEnv {
   DB: D1Database;
   LOCAL_QUEUE_SHARED_SECRET?: string;
+  RUN_RESUME_STALE_MS?: string;
   __TEST_CODERUNNER_ADAPTER__?: CoderunnerAdapter;
+  __TEST_GITHUB_ADAPTER__?: GitHubAdapter;
 }
 
 interface RunExecutionRow {
@@ -42,7 +50,9 @@ interface RunContextRow {
   goal: string | null;
   requestor: string;
   base_branch: string;
+  work_branch: string | null;
   pr_mode: string;
+  pr_url: string | null;
   status: string;
   current_station: string | null;
   started_at: string | null;
@@ -61,13 +71,12 @@ interface StationExecutionRow {
   summary: string | null;
 }
 
-const RUN_RESUME_STALE_MS = 30_000;
+const DEFAULT_RUN_RESUME_STALE_MS = 30_000;
 const RUN_HEARTBEAT_INTERVAL_MS = 5_000;
 const LOCAL_QUEUE_CONSUME_PATH = "/__queue/consume";
 const LOCAL_QUEUE_SECRET_HEADER = "x-bob-local-queue-secret";
 const RUNNER_LOG_EXCERPT_LIMIT = 4_000;
 const STATION_SUMMARY_LIMIT = 500;
-const IN_PROGRESS_RETRY_DELAY_SECONDS = Math.ceil(RUN_RESUME_STALE_MS / 1_000);
 
 class RetryableStationExecutionError extends Error {
   public readonly station: StationName;
@@ -134,7 +143,29 @@ function parseRunStatus(status: string): RunStatus | null {
   return isRunStatus(status) ? status : null;
 }
 
-function shouldResumeRunningRun(run: RunExecutionRow): boolean {
+function parsePositiveInteger(value: string | undefined): number | null {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const parsed = Number.parseInt(trimmed, 10);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return null;
+  }
+
+  return parsed;
+}
+
+function getRunResumeStaleMs(env: Env): number {
+  return parsePositiveInteger(env.RUN_RESUME_STALE_MS) ?? DEFAULT_RUN_RESUME_STALE_MS;
+}
+
+function getInProgressRetryDelaySeconds(env: Env): number {
+  return Math.max(1, Math.ceil(getRunResumeStaleMs(env) / 1_000));
+}
+
+function shouldResumeRunningRun(run: RunExecutionRow, runResumeStaleMs: number): boolean {
   if (run.status !== "running") {
     return false;
   }
@@ -149,7 +180,7 @@ function shouldResumeRunningRun(run: RunExecutionRow): boolean {
     return true;
   }
 
-  return Date.now() - heartbeatAt >= RUN_RESUME_STALE_MS;
+  return Date.now() - heartbeatAt >= runResumeStaleMs;
 }
 
 function stationExecutionId(runId: string, station: StationName): string {
@@ -195,6 +226,10 @@ function serializeMetadata(metadata: StationExecutionMetadata | undefined): stri
 
 function getCoderunnerAdapter(env: Env): CoderunnerAdapter {
   return env.__TEST_CODERUNNER_ADAPTER__ ?? createCoderunnerAdapterFromEnv(env);
+}
+
+function getGitHubAdapter(env: Env): GitHubAdapter {
+  return env.__TEST_GITHUB_ADAPTER__ ?? createGitHubAdapterFromEnv(env);
 }
 
 function getResumeStationIndex(run: RunExecutionRow, currentStationStatus: string | null): number {
@@ -329,7 +364,9 @@ async function getRunContextForExecution(env: Env, runId: string): Promise<RunCo
         runs.goal,
         runs.requestor,
         runs.base_branch,
+        runs.work_branch,
         runs.pr_mode,
+        runs.pr_url,
         runs.status,
         runs.current_station,
         runs.started_at,
@@ -385,6 +422,23 @@ async function updateRunCurrentStation(
      WHERE id = ? AND status = ?`
   )
     .bind(station, heartbeatAt, runId, "running")
+    .run();
+}
+
+async function updateRunPullRequestMetadata(
+  env: Env,
+  runId: string,
+  metadata: {
+    workBranch: string;
+    prUrl: string;
+  }
+): Promise<void> {
+  await env.DB.prepare(
+    `UPDATE runs
+     SET work_branch = ?, pr_url = ?, heartbeat_at = ?
+     WHERE id = ? AND status = ?`
+  )
+    .bind(metadata.workBranch, metadata.prUrl, nowIso(), runId, "running")
     .run();
 }
 
@@ -595,6 +649,32 @@ async function persistLightweightStationArtifact(
   });
 }
 
+async function persistCreatePrMetadataArtifact(
+  env: Env,
+  run: RunContextRow,
+  metadata: {
+    workBranch: string;
+    commitSha: string;
+    prNumber: number;
+    prUrl: string;
+    branchCreated: boolean;
+    prCreated: boolean;
+  }
+): Promise<void> {
+  await upsertArtifact(env, run.id, "create_pr_metadata", {
+    station: "create_pr",
+    repo: `${run.repo_owner}/${run.repo_name}`,
+    issueNumber: run.issue_number,
+    runId: run.id,
+    workBranch: metadata.workBranch,
+    commitSha: metadata.commitSha,
+    prNumber: metadata.prNumber,
+    prUrl: metadata.prUrl,
+    branchCreated: metadata.branchCreated,
+    prCreated: metadata.prCreated
+  });
+}
+
 async function persistExecutionArtifacts(
   env: Env,
   runId: string,
@@ -654,7 +734,7 @@ async function executeVerifyStation(
 
 function executeSkeletonStation(
   run: RunContextRow,
-  station: Extract<StationName, "intake" | "plan" | "create_pr">
+  station: Extract<StationName, "intake" | "plan">
 ): StationExecutionResult {
   if (station === "intake") {
     return {
@@ -672,9 +752,38 @@ function executeSkeletonStation(
     };
   }
 
+  throw new Error(`Unsupported skeleton station: ${station}`);
+}
+
+async function executeCreatePrStation(
+  env: Env,
+  run: RunContextRow,
+  adapter: GitHubAdapter
+): Promise<StationExecutionResult> {
+  const result = await adapter.createPullRequestForRun({
+    runId: run.id,
+    issueNumber: run.issue_number,
+    goal: run.goal,
+    requestor: run.requestor,
+    prMode: isPrMode(run.pr_mode) ? run.pr_mode : "draft",
+    repo: {
+      owner: run.repo_owner,
+      name: run.repo_name,
+      baseBranch: run.base_branch
+    },
+    existingWorkBranch: run.work_branch,
+    existingPrUrl: run.pr_url
+  });
+
+  await updateRunPullRequestMetadata(env, run.id, {
+    workBranch: result.workBranch,
+    prUrl: result.prUrl
+  });
+  await persistCreatePrMetadataArtifact(env, run, result);
+
   return {
     outcome: "succeeded",
-    summary: "create_pr placeholder remains until PR5"
+    summary: `create_pr completed: ${result.prUrl}`
   };
 }
 
@@ -728,17 +837,23 @@ async function startStationExecution(
 }
 
 async function executeStationTask(
+  env: Env,
   run: RunContextRow,
   station: StationName,
   stationExecution: StationExecutionRow | null,
-  adapter: CoderunnerAdapter
+  coderunnerAdapter: CoderunnerAdapter,
+  githubAdapter: GitHubAdapter
 ): Promise<StationExecutionResponse> {
   if (station === "implement") {
-    return executeImplementStation(run, stationExecution, adapter);
+    return executeImplementStation(run, stationExecution, coderunnerAdapter);
   }
 
   if (station === "verify") {
-    return executeVerifyStation(run, stationExecution, adapter);
+    return executeVerifyStation(run, stationExecution, coderunnerAdapter);
+  }
+
+  if (station === "create_pr") {
+    return executeCreatePrStation(env, run, githubAdapter);
   }
 
   return executeSkeletonStation(run, station);
@@ -846,7 +961,8 @@ async function executeStation(
   env: Env,
   run: RunContextRow,
   station: StationName,
-  adapter: CoderunnerAdapter
+  coderunnerAdapter: CoderunnerAdapter,
+  githubAdapter: GitHubAdapter
 ): Promise<void> {
   const stationExecution = await getStationExecution(env, run.id, station);
   if (maybeSkipPreviouslyCompletedStation(run.id, station, stationExecution)) {
@@ -857,7 +973,14 @@ async function executeStation(
 
   const stopHeartbeatLoop = startRunHeartbeatLoop(env, run.id, station);
   try {
-    const executionResult = await executeStationTask(run, station, stationExecution, adapter);
+    const executionResult = await executeStationTask(
+      env,
+      run,
+      station,
+      stationExecution,
+      coderunnerAdapter,
+      githubAdapter
+    );
     if (!isTerminalStationExecutionResponse(executionResult)) {
       await persistInProgressStationResultAndThrow(env, run.id, station, executionResult);
     } else {
@@ -878,6 +1001,13 @@ async function executeStation(
       );
     }
 
+    if (isRetryableGitHubError(error)) {
+      throw new RetryableStationExecutionError(
+        station,
+        `Retryable station error at ${station}: ${errorMessage(error)}`
+      );
+    }
+
     await markStationFailedForUnexpectedError(env, run.id, station, error);
   } finally {
     stopHeartbeatLoop();
@@ -891,10 +1021,11 @@ async function runWorkflowSkeleton(env: Env, runId: string, startStationIndex = 
   }
 
   const coderunnerAdapter = getCoderunnerAdapter(env);
+  const githubAdapter = getGitHubAdapter(env);
   const normalizedStart = Math.max(0, Math.min(startStationIndex, STATION_NAMES.length));
 
   for (const station of STATION_NAMES.slice(normalizedStart)) {
-    await executeStation(env, run, station, coderunnerAdapter);
+    await executeStation(env, run, station, coderunnerAdapter, githubAdapter);
   }
 
   const markedSucceeded = await markRunSucceeded(env, runId);
@@ -1036,7 +1167,7 @@ async function claimStaleRunOrRetry(
   message: Message<unknown>,
   run: RunExecutionRow
 ): Promise<number | null> {
-  if (!shouldResumeRunningRun(run)) {
+  if (!shouldResumeRunningRun(run, getRunResumeStaleMs(env))) {
     logEvent("run.defer.running", {
       runId: payload.runId,
       messageId: message.id
@@ -1107,7 +1238,7 @@ async function handleWorkflowExecutionError(
       reason: error.message
     });
     message.retry({
-      delaySeconds: IN_PROGRESS_RETRY_DELAY_SECONDS
+      delaySeconds: getInProgressRetryDelaySeconds(env)
     });
     return;
   }
@@ -1200,20 +1331,29 @@ export async function handleFetch(request: Request, env: Env): Promise<Response>
 
     let wasAcked = false;
     let shouldRetry = false;
+    let retryDelaySeconds: number | null = null;
     const syntheticMessage = {
       id: `local_${crypto.randomUUID()}`,
       body,
       ack() {
         wasAcked = true;
       },
-      retry() {
+      retry(options?: { delaySeconds?: number }) {
         shouldRetry = true;
+        if (options && typeof options.delaySeconds === "number") {
+          const rounded = Math.floor(options.delaySeconds);
+          retryDelaySeconds = rounded >= 1 ? rounded : null;
+        }
       }
     } satisfies Pick<Message<unknown>, "id" | "body" | "ack" | "retry">;
 
     await processQueueMessage(env, syntheticMessage as unknown as Message<unknown>);
     if (shouldRetry) {
-      return json(503, { ok: false, outcome: "retry" });
+      return json(503, {
+        ok: false,
+        outcome: "retry",
+        ...(retryDelaySeconds ? { delaySeconds: retryDelaySeconds } : {})
+      });
     }
 
     return json(202, { ok: true, outcome: wasAcked ? "ack" : "none" });

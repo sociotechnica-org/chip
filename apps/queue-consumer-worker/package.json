@@ -11,10 +11,12 @@
     "lint": "eslint src test --ext .ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run test/index.test.ts",
-    "test:integration": "vitest run test/smoke.integration.test.ts"
+    "test:integration": "vitest run test/smoke.integration.test.ts",
+    "test:e2e": "vitest run test/e2e.integration.test.ts"
   },
   "dependencies": {
     "@bob/adapters-coderunner": "workspace:*",
+    "@bob/adapters-github": "workspace:*",
     "@bob/core": "workspace:*"
   }
 }

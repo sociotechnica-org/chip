@@ -110,6 +110,22 @@ PR4 replaces placeholder station bodies with adapter-driven execution:
   - bounded `*_runner_logs_excerpt` artifacts
 - stale running runs resume externalized station work by polling existing `external_ref`
 
+## PR5 GitHub PR Creation Status
+
+PR5 closes the issue-to-PR loop with real `create_pr` behavior:
+
+- `@bob/adapters-github` implements typed mock + GitHub REST modes
+- queue-consumer `create_pr` station now:
+  - pushes/uses a deterministic work branch
+  - writes a marker commit for PRability in GitHub mode
+  - opens or reuses the pull request idempotently
+- run metadata persistence now includes:
+  - `runs.work_branch`
+  - `runs.pr_url`
+  - `create_pr_metadata` artifact with branch/commit/PR details
+- retry-safe behavior handles partial success (`branch exists`, `PR not created yet`) without duplicate PRs
+- new full e2e suite boots control-worker + queue-consumer, mocks GitHub, and verifies end-to-end create_pr behavior
+
 ## Getting Started
 
 Brand new local instance:
@@ -138,6 +154,10 @@ For reliable local end-to-end queue execution during `pnpm dev`, configure:
   - `LOCAL_QUEUE_SHARED_SECRET=...`
 - `apps/queue-consumer-worker/.dev.vars`:
   - `LOCAL_QUEUE_SHARED_SECRET=...` (must match control worker)
+  - `GITHUB_ADAPTER_MODE=mock|github` (`mock` default; use `github` for real PR creation)
+  - `GITHUB_TOKEN=...` (required when `GITHUB_ADAPTER_MODE=github`)
+  - `GITHUB_API_BASE_URL=...` (optional; defaults to `https://api.github.com`)
+  - `RUN_RESUME_STALE_MS=...` (optional; lower values speed local retry/resume loops)
   - `CODERUNNER_MODE=mock` (default; CI-safe)
   - `CLAUDE_CODE_API_KEY=...` (required when `CODERUNNER_MODE=sprites`)
   - `SPRITE_TOKEN=...` (required when `CODERUNNER_MODE=sprites`)
@@ -150,6 +170,24 @@ For real adapter QA, switch queue-consumer to sprites mode:
 ```bash
 export CODERUNNER_MODE=sprites
 ```
+
+For real GitHub PR creation QA, also set:
+
+```bash
+export GITHUB_ADAPTER_MODE=github
+export GITHUB_TOKEN=ghp_...
+```
+
+Credentialed manual QA flow for create_pr:
+
+1. Start stack: `pnpm dev`
+2. Create repo via `POST /v1/repos`
+3. Submit run via `POST /v1/runs` with `Idempotency-Key`
+4. Poll `GET /v1/runs/:id` until terminal
+5. Confirm:
+   - `run.workBranch` and `run.prUrl` are populated
+   - `create_pr` station is `succeeded`
+   - `create_pr_metadata` artifact exists
 
 Reset local runtime state and rebuild a fresh local instance:
 
@@ -165,6 +203,7 @@ pnpm lint:check       # typecheck + lint + format:check (CI-safe)
 pnpm test             # unit + integration
 pnpm test:unit        # unit tests only
 pnpm test:integration # smoke/integration tests only
+pnpm test:e2e:issue-pr # full mocked issue->PR e2e (control + queue + GitHub mock)
 pnpm smoke            # all smoke suites
 ```
 

@@ -14,7 +14,9 @@ export interface RunRow {
   current_station: string | null;
   requestor: string;
   base_branch: string;
+  work_branch: string | null;
   pr_mode: string;
+  pr_url: string | null;
   started_at: string | null;
   heartbeat_at: string | null;
   finished_at: string | null;
@@ -108,7 +110,9 @@ export class MockD1Database {
       current_station: run.current_station ?? null,
       requestor: run.requestor ?? "jess",
       base_branch: run.base_branch ?? "main",
+      work_branch: run.work_branch ?? null,
       pr_mode: run.pr_mode ?? "draft",
+      pr_url: run.pr_url ?? null,
       started_at: run.started_at ?? null,
       heartbeat_at: run.heartbeat_at ?? null,
       finished_at: run.finished_at ?? null,
@@ -197,7 +201,9 @@ export class MockD1Database {
         goal: run.goal,
         requestor: run.requestor,
         base_branch: run.base_branch,
+        work_branch: run.work_branch,
         pr_mode: run.pr_mode,
+        pr_url: run.pr_url,
         status: run.status,
         current_station: run.current_station,
         started_at: run.started_at,
@@ -429,6 +435,26 @@ export class MockD1Database {
       row.summary = asNullableString(params[2]);
       row.external_ref = asNullableString(params[3]) ?? row.external_ref;
       row.metadata_json = asNullableString(params[4]) ?? row.metadata_json;
+      return 1;
+    }
+
+    if (
+      sql.startsWith("update runs") &&
+      sql.includes("set work_branch = ?") &&
+      sql.includes("pr_url = ?") &&
+      sql.includes("heartbeat_at = ?") &&
+      sql.includes("where id = ? and status = ?")
+    ) {
+      const runId = asString(params[3]);
+      const expectedStatus = asString(params[4]);
+      const run = this.runs.find((candidate) => candidate.id === runId);
+      if (!run || run.status !== expectedStatus) {
+        return 0;
+      }
+
+      run.work_branch = asNullableString(params[0]);
+      run.pr_url = asNullableString(params[1]);
+      run.heartbeat_at = asNullableString(params[2]);
       return 1;
     }
 

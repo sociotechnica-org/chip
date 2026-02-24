@@ -37,7 +37,17 @@ function createEnv(localQueueSecret?: string): { env: Env; db: MockD1Database } 
     env: {
       DB: db as unknown as D1Database,
       LOCAL_QUEUE_SHARED_SECRET: localQueueSecret,
-      __TEST_CODERUNNER_ADAPTER__: createSuccessAdapter()
+      __TEST_CODERUNNER_ADAPTER__: createSuccessAdapter(),
+      __TEST_GITHUB_ADAPTER__: {
+        createPullRequestForRun: async (input) => ({
+          workBranch: input.existingWorkBranch ?? `bob/${input.runId}`,
+          commitSha: `mockcommit-${input.runId}`,
+          prNumber: input.issueNumber,
+          prUrl: `https://github.example/pr/${input.issueNumber}`,
+          branchCreated: true,
+          prCreated: true
+        })
+      }
     },
     db
   };
@@ -142,6 +152,7 @@ describe("queue-consumer smoke", () => {
       outcome: "ack"
     });
     expect(db.getRun("run_via_local_consume")?.status).toBe("succeeded");
+    expect(db.getRun("run_via_local_consume")?.pr_url).toBe("https://github.example/pr/1");
     expect(db.listStations("run_via_local_consume").length).toBe(5);
     expect(db.listArtifacts("run_via_local_consume").length).toBeGreaterThanOrEqual(5);
   });
@@ -181,6 +192,7 @@ describe("queue-consumer smoke", () => {
 
     expect(acked).toBe(true);
     expect(db.getRun("run_smoke")?.status).toBe("succeeded");
+    expect(db.getRun("run_smoke")?.pr_url).toBe("https://github.example/pr/1");
     expect(db.listStations("run_smoke").length).toBe(5);
     expect(db.listArtifacts("run_smoke").length).toBeGreaterThanOrEqual(5);
   });

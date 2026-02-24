@@ -73,6 +73,9 @@ importers:
       "@bob/adapters-coderunner":
         specifier: workspace:*
         version: link:../../packages/adapters-coderunner
+      "@bob/adapters-github":
+        specifier: workspace:*
+        version: link:../../packages/adapters-github
       "@bob/core":
         specifier: workspace:*
         version: link:../../packages/core
@@ -111,7 +114,11 @@ importers:
         specifier: workspace:*
         version: link:../core
 
-  packages/adapters-github: {}
+  packages/adapters-github:
+    dependencies:
+      "@bob/core":
+        specifier: workspace:*
+        version: link:../core
 
   packages/adapters-sprites:
     dependencies:
