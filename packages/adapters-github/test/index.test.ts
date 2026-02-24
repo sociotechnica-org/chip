@@ -75,7 +75,7 @@ describe("adapters-github", () => {
         });
       }
 
-      if (method === "PUT" && url.includes("/contents/.bob%2Fruns%2Frun_1.md")) {
+      if (method === "PUT" && url.includes("/contents/.bob/runs/run_1.md")) {
         return jsonResponse(201, {
           commit: {
             sha: "sha_commit"
@@ -154,13 +154,13 @@ describe("adapters-github", () => {
         });
       }
 
-      if (method === "PUT" && url.includes("/contents/.bob%2Fruns%2Frun_1.md")) {
+      if (method === "PUT" && url.includes("/contents/.bob/runs/run_1.md")) {
         return jsonResponse(409, {
           message: "Conflict"
         });
       }
 
-      if (method === "GET" && url.endsWith("/git/ref/heads/bob%2Frun-1")) {
+      if (method === "GET" && url.endsWith("/git/ref/heads/bob/run-1")) {
         return jsonResponse(200, {
           object: {
             sha: "sha_existing_branch"
@@ -192,6 +192,86 @@ describe("adapters-github", () => {
       prNumber: 505,
       prUrl: "https://github.com/sociotechnica-org/lifebuild/pull/505",
       branchCreated: false,
+      prCreated: false
+    });
+  });
+
+  it("treats nested validation duplicate-PR errors as idempotent", async () => {
+    const fetchFn = vi.fn(async (resource: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(resource);
+      const method = (init?.method ?? "GET").toUpperCase();
+
+      if (method === "GET" && url.includes("/pulls?")) {
+        // First pull-list call: no PR. Second call after 422: existing PR.
+        const callCount = fetchFn.mock.calls.filter((entry) => {
+          const reqUrl = String(entry[0]);
+          const reqMethod = (entry[1]?.method ?? "GET").toUpperCase();
+          return reqMethod === "GET" && reqUrl.includes("/pulls?");
+        }).length;
+
+        if (callCount === 1) {
+          return jsonResponse(200, []);
+        }
+
+        return jsonResponse(200, [
+          {
+            number: 606,
+            html_url: "https://github.com/sociotechnica-org/lifebuild/pull/606"
+          }
+        ]);
+      }
+
+      if (method === "GET" && url.endsWith("/git/ref/heads/main")) {
+        return jsonResponse(200, {
+          object: {
+            sha: "sha_base"
+          }
+        });
+      }
+
+      if (method === "POST" && url.endsWith("/git/refs")) {
+        return jsonResponse(201, {
+          ref: "refs/heads/bob/run-1"
+        });
+      }
+
+      if (method === "PUT" && url.includes("/contents/.bob/runs/run_1.md")) {
+        return jsonResponse(201, {
+          commit: {
+            sha: "sha_commit_2"
+          }
+        });
+      }
+
+      if (method === "POST" && url.endsWith("/pulls")) {
+        return jsonResponse(422, {
+          message: "Validation Failed",
+          errors: [
+            {
+              message: "A pull request already exists for bob/run-1"
+            }
+          ]
+        });
+      }
+
+      throw new Error(`Unexpected request: ${method} ${url}`);
+    });
+
+    const adapter = createGitHubAdapter({
+      mode: "github",
+      token: "ghp_test",
+      apiBaseUrl: "https://api.github.test",
+      fetchFn
+    });
+
+    const result = await adapter.createPullRequestForRun(createInput());
+
+    expect(result).toMatchObject({
+      workBranch: "bob/run-1",
+      commitSha: "sha_commit_2",
+      prNumber: 606,
+      prUrl: "https://github.com/sociotechnica-org/lifebuild/pull/606",
+      branchCreated: true,
       prCreated: false
     });
   });

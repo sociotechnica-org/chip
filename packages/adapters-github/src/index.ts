@@ -212,6 +212,13 @@ function parseErrorMessage(payload: unknown): string {
   return "Unexpected GitHub API response";
 }
 
+function encodeGitHubPath(value: string): string {
+  return value
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+}
+
 function normalizeWorkBranch(runId: string): string {
   const slug = runId
     .toLowerCase()
@@ -302,19 +309,41 @@ function isBranchExistsError(payload: unknown): boolean {
 }
 
 function isPullRequestExistsError(payload: unknown): boolean {
+  const duplicateMessagePattern = /(a )?pull request already exists/iu;
+
   if (!isRecord(payload)) {
     return false;
   }
 
   const message = asNonEmptyString(payload.message)?.toLowerCase();
-  if (!message) {
+  if (message && duplicateMessagePattern.test(message)) {
+    return true;
+  }
+
+  const errors = payload.errors;
+  if (!Array.isArray(errors)) {
     return false;
   }
 
-  return (
-    message.includes("pull request already exists") ||
-    message.includes("a pull request already exists")
-  );
+  for (const error of errors) {
+    if (typeof error === "string" && duplicateMessagePattern.test(error)) {
+      return true;
+    }
+
+    if (!isRecord(error)) {
+      continue;
+    }
+
+    const nestedMessage =
+      asNonEmptyString(error.message) ??
+      asNonEmptyString(error.code) ??
+      asNonEmptyString(error.resource);
+    if (nestedMessage && duplicateMessagePattern.test(nestedMessage)) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 class MockGitHubAdapter implements GitHubAdapter {
@@ -415,7 +444,7 @@ class GitHubRestAdapter implements GitHubAdapter {
 
     const createResponse = await this.apiRequest<GitHubContentResponse | unknown>(
       "PUT",
-      `/repos/${encodeURIComponent(input.repo.owner)}/${encodeURIComponent(input.repo.name)}/contents/${encodeURIComponent(path)}`,
+      `/repos/${encodeURIComponent(input.repo.owner)}/${encodeURIComponent(input.repo.name)}/contents/${encodeGitHubPath(path)}`,
       {
         message: `chore: record automated run ${input.runId}`,
         content,
@@ -528,7 +557,7 @@ class GitHubRestAdapter implements GitHubAdapter {
   private async getBranchHeadSha(input: GitHubCreatePrInput, branch: string): Promise<string> {
     const response = await this.apiRequest<GitRefResponse | unknown>(
       "GET",
-      `/repos/${encodeURIComponent(input.repo.owner)}/${encodeURIComponent(input.repo.name)}/git/ref/heads/${encodeURIComponent(branch)}`
+      `/repos/${encodeURIComponent(input.repo.owner)}/${encodeURIComponent(input.repo.name)}/git/ref/heads/${encodeGitHubPath(branch)}`
     );
 
     const sha = asNonEmptyString((response.body as GitRefResponse).object?.sha);
