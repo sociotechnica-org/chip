@@ -17,7 +17,7 @@ Use this playbook when any of the following is observed:
 
 1. `SEV-1`
    - production run creation unavailable, or
-   - > = 50% terminal failures for 15 minutes, or
+   - `>= 50%` terminal failures for 15 minutes, or
    - widespread data integrity risk
 2. `SEV-2`
    - elevated failures/retries with degraded service but partial run success
