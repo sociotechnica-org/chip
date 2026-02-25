@@ -131,6 +131,16 @@ Before starting services, create `.dev.vars` files from their `.example` templat
 
 See `README.md` "Common quality commands" section. Key commands: `pnpm lint:check`, `pnpm test`, `pnpm smoke`.
 
+### Required validation sequence per delivery slice
+
+For every delivery slice, run this full validation sequence before considering the slice complete:
+
+1. `pnpm lint:check`
+2. `pnpm test`
+3. `pnpm smoke`
+4. `pnpm test:e2e`
+5. `pnpm test:e2e:issue-pr`
+
 ### Gotchas
 
 - pnpm install may warn about ignored build scripts for `esbuild`, `sharp`, `workerd`. These still work without running postinstall scripts in this environment; no action needed.
