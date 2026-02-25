@@ -232,6 +232,61 @@ describe("queue-consumer worker", () => {
     expect(db.getStationExecution("run_cancel_during_workflow", "verify")).toBeUndefined();
   });
 
+  it("does not start a station if cancel is observed at station-start boundary", async () => {
+    const githubAdapter: GitHubAdapter = {
+      createPullRequestForRun: vi.fn(async (input) => ({
+        workBranch: input.existingWorkBranch ?? `bob/${input.runId}`,
+        commitSha: `mockcommit-${input.runId}`,
+        prNumber: input.issueNumber,
+        prUrl: input.existingPrUrl ?? `https://github.example/pr/${input.issueNumber}`,
+        branchCreated: !input.existingWorkBranch,
+        prCreated: !input.existingPrUrl
+      }))
+    };
+
+    const { env, db } = createEnv(createSuccessAdapter(), githubAdapter);
+    db.seedRun({
+      id: "run_cancel_before_create_pr",
+      status: "queued"
+    });
+    db.setBeforeRunCurrentStationUpdate("run_cancel_before_create_pr", (station) => {
+      if (station !== "create_pr") {
+        return;
+      }
+
+      const run = db.getRun("run_cancel_before_create_pr");
+      if (run) {
+        run.status = "canceled";
+        run.current_station = null;
+        run.finished_at = new Date().toISOString();
+        run.failure_reason = null;
+      }
+    });
+
+    const message = createMessage(
+      "msg_cancel_before_create_pr",
+      createBaseRunMessage("run_cancel_before_create_pr")
+    );
+
+    await handleQueue(
+      {
+        messages: [message as unknown as Message<unknown>]
+      } as MessageBatch<unknown>,
+      env
+    );
+
+    expect(message.acked).toBe(true);
+    expect(db.getRun("run_cancel_before_create_pr")?.status).toBe("canceled");
+    expect(githubAdapter.createPullRequestForRun).not.toHaveBeenCalled();
+    expect(db.getStationExecution("run_cancel_before_create_pr", "implement")?.status).toBe(
+      "succeeded"
+    );
+    expect(db.getStationExecution("run_cancel_before_create_pr", "verify")?.status).toBe(
+      "succeeded"
+    );
+    expect(db.getStationExecution("run_cancel_before_create_pr", "create_pr")).toBeUndefined();
+  });
+
   it("marks run failed when implement returns a terminal failure outcome", async () => {
     const adapter: CoderunnerAdapter = {
       runImplementTask: async () => ({

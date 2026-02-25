@@ -414,15 +414,17 @@ async function updateRunCurrentStation(
   env: Env,
   runId: string,
   station: StationName
-): Promise<void> {
+): Promise<boolean> {
   const heartbeatAt = nowIso();
-  await env.DB.prepare(
+  const result = await env.DB.prepare(
     `UPDATE runs
      SET current_station = ?, heartbeat_at = ?
      WHERE id = ? AND status = ?`
   )
     .bind(station, heartbeatAt, runId, "running")
     .run();
+
+  return getAffectedRowCount(result) === 1;
 }
 
 async function updateRunPullRequestMetadata(
@@ -813,11 +815,29 @@ async function startStationExecution(
   runId: string,
   station: StationName,
   stationExecution: StationExecutionRow | null
-): Promise<{ startedAtMs: number }> {
+): Promise<{ startedAtMs: number } | null> {
   const startedAt = stationExecution?.started_at ?? nowIso();
   const startedAtMs = parseStationStartAtMs(stationExecution);
 
-  await updateRunCurrentStation(env, runId, station);
+  const runHeartbeatUpdated = await updateRunCurrentStation(env, runId, station);
+  if (!runHeartbeatUpdated) {
+    const latestRun = await getRunForExecution(env, runId);
+    const latestStatus = latestRun ? parseRunStatus(latestRun.status) : null;
+    if (!latestRun || (latestStatus && isTerminalRunStatus(latestStatus))) {
+      logEvent("run.terminal.observed.before_station_start", {
+        runId,
+        station,
+        status: latestStatus ?? "missing"
+      });
+      return null;
+    }
+
+    throw new RetryableStationExecutionError(
+      station,
+      `Run state changed before ${station} could start; retrying`
+    );
+  }
+
   await markStationRunning(
     env,
     runId,
@@ -963,13 +983,17 @@ async function executeStation(
   station: StationName,
   coderunnerAdapter: CoderunnerAdapter,
   githubAdapter: GitHubAdapter
-): Promise<void> {
+): Promise<boolean> {
   const stationExecution = await getStationExecution(env, run.id, station);
   if (maybeSkipPreviouslyCompletedStation(run.id, station, stationExecution)) {
-    return;
+    return true;
   }
 
-  const { startedAtMs } = await startStationExecution(env, run.id, station, stationExecution);
+  const stationStart = await startStationExecution(env, run.id, station, stationExecution);
+  if (!stationStart) {
+    return false;
+  }
+  const { startedAtMs } = stationStart;
 
   const stopHeartbeatLoop = startRunHeartbeatLoop(env, run.id, station);
   try {
@@ -1012,6 +1036,8 @@ async function executeStation(
   } finally {
     stopHeartbeatLoop();
   }
+
+  return true;
 }
 
 async function runWorkflowSkeleton(env: Env, runId: string, startStationIndex = 0): Promise<void> {
@@ -1047,7 +1073,10 @@ async function runWorkflowSkeleton(env: Env, runId: string, startStationIndex = 
       return;
     }
 
-    await executeStation(env, run, station, coderunnerAdapter, githubAdapter);
+    const stationExecuted = await executeStation(env, run, station, coderunnerAdapter, githubAdapter);
+    if (!stationExecuted) {
+      return;
+    }
   }
 
   const markedSucceeded = await markRunSucceeded(env, runId);
