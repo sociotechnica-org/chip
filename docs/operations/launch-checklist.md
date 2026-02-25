@@ -40,8 +40,8 @@ Use this checklist before every production promotion. All required gates must be
 
 Promotion may proceed only when all required gates are complete and approved.
 
-1. Release Driver: ********\_\_\_\_********
-2. On-call Operator: ********\_\_\_\_********
-3. Engineering Approver: ********\_\_\_\_********
-4. Promotion Start (UTC): ********\_\_\_\_********
-5. Promotion End (UTC): ********\_\_\_\_********
+1. Release Driver: [signoff]
+2. On-call Operator: [signoff]
+3. Engineering Approver: [signoff]
+4. Promotion Start (UTC): [timestamp]
+5. Promotion End (UTC): [timestamp]
