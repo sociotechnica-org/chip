@@ -67,7 +67,7 @@ PR1 establishes the base monorepo scaffolding and a minimal Cloudflare worker sl
 - `packages/security` shared password gate helpers
 - `apps/control-worker` with `/healthz` and protected `/v1/ping`
 - `apps/queue-consumer-worker` scaffold for future queue orchestration
-- `apps/web` Vite + React placeholder app
+- `apps/web` initial Vite + React scaffold (expanded in PR6)
 
 ## PR2 Control Plane Status
 
@@ -125,6 +125,25 @@ PR5 closes the issue-to-PR loop with real `create_pr` behavior:
   - `create_pr_metadata` artifact with branch/commit/PR details
 - retry-safe behavior handles partial success (`branch exists`, `PR not created yet`) without duplicate PRs
 - new full e2e suite boots control-worker + queue-consumer, mocks GitHub, and verifies end-to-end create_pr behavior
+
+## PR6 Web Dashboard Status
+
+PR6 delivers the first operator dashboard in `apps/web`:
+
+- password-gated API configuration with local persistence
+- run list + run detail timeline with loading/empty/error states
+- artifact payload viewer powered by `GET /v1/runs/:id/artifacts/:artifactId`
+- run submission flow from UI with idempotent request keys
+- Playwright e2e dashboard coverage using mocked control API responses
+
+## PR7 Hardening Status
+
+PR7 adds core operator-control hardening:
+
+- `POST /v1/runs/:id/cancel` for queued/running run cancellation
+- `POST /v1/runs/:id/retry` for terminal-run replay as a new queued run
+- queue-consumer cancellation awareness to stop station progression after cancel is observed
+- additional unit/integration coverage for cancel/retry and artifact retrieval behavior
 
 ## Getting Started
 
@@ -203,6 +222,7 @@ pnpm lint:check       # typecheck + lint + format:check (CI-safe)
 pnpm test             # unit + integration
 pnpm test:unit        # unit tests only
 pnpm test:integration # smoke/integration tests only
+pnpm test:e2e         # web dashboard Playwright e2e (mocked API)
 pnpm test:e2e:issue-pr # full mocked issue->PR e2e (control + queue + GitHub mock)
 pnpm smoke            # all smoke suites
 ```
@@ -227,6 +247,12 @@ curl -i -H \"Authorization: Bearer $BOB_PASSWORD\" -H \"Content-Type: applicatio
   -H \"Idempotency-Key: run-123\" \
   -d '{"repo":{"owner":"sociotechnica-org","name":"lifebuild"},"issue":{"number":123},"requestor":"jess","prMode":"draft"}' \
   http://127.0.0.1:20287/v1/runs
+curl -i -X POST -H \"Authorization: Bearer $BOB_PASSWORD\" \
+  http://127.0.0.1:20287/v1/runs/<RUN_ID>/cancel
+curl -i -X POST -H \"Authorization: Bearer $BOB_PASSWORD\" \
+  http://127.0.0.1:20287/v1/runs/<RUN_ID>/retry
+curl -i -H \"Authorization: Bearer $BOB_PASSWORD\" \
+  http://127.0.0.1:20287/v1/runs/<RUN_ID>/artifacts/<ARTIFACT_ID>
 ```
 
 Run an automated local Vitest integration smoke test for the control worker:

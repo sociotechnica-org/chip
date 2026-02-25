@@ -100,7 +100,7 @@ Production-complete additions:
 9. PR6: Vite web dashboard (runs list/detail/artifacts).
 10. PR7: Hardening (retries, cancel, R2 artifacts, test coverage uplift).
 
-## 8. Current Implementation Status (as of 2026-02-24)
+## 8. Current Implementation Status (as of 2026-02-25)
 
 Completed slices:
 
@@ -109,6 +109,8 @@ Completed slices:
 3. Execution Orchestration Skeleton (queue consumer + workflow station persistence).
 4. Adapter-Driven Execution (`implement`/`verify` via Sprites + coderunner adapters).
 5. GitHub PR Creation (`create_pr` real behavior with idempotent retry handling).
+6. Web Dashboard v0 (authenticated run list/detail, artifact payload viewer, submit flow).
+7. Reliability Hardening v0 (cancel/retry endpoints, cancellation-aware workflow progression, added smoke/e2e coverage).
 
 In-flight:
 
@@ -116,7 +118,7 @@ In-flight:
 
 Next slice:
 
-1. Web Dashboard v0 (runs list/detail/artifacts/logs).
+1. Launch-readiness phase work (staging/rollout plumbing + observability hardening).
 
 Historical mapping (legacy numeric labels):
 
@@ -134,7 +136,7 @@ Historical mapping (legacy numeric labels):
 
 1. Adapter-Driven Execution: complete.
 2. GitHub PR Creation: complete.
-3. Web Dashboard v0: next active slice (run list, run detail timeline, artifact/log viewer).
+3. Web Dashboard v0: complete.
 
 ### Phase B: Production Hardening
 
@@ -224,14 +226,13 @@ Expected additions during production hardening:
 4. Platform has staging and production deployment playbooks with rollback.
 5. Alerting exists for queue backlog growth, workflow failures, and provider outages.
 
-## 13. Immediate Next Action (Web Dashboard v0 Slice)
+## 13. Immediate Next Action (Launch Readiness Slice)
 
-Start Web Dashboard v0 immediately.
+Start Phase C launch-readiness work.
 
-Web Dashboard v0 slice goals:
+Launch-readiness slice goals:
 
-1. Build authenticated run list and run detail views in `apps/web`.
-2. Show station timeline and create_pr metadata/artifact summaries.
-3. Add artifact/log viewer primitives and empty/error/loading states.
-4. Add end-to-end coverage for dashboard + API integration in CI-safe mode.
-5. Add local operator QA flow for submitting a run and tracking it to terminal state in the UI.
+1. Define environment promotion flow and rollback runbook for staging -> production.
+2. Add baseline dashboards/alerts for queue depth, terminal failure rates, and retry spikes.
+3. Document migration discipline and incident-response playbook for run lifecycle failures.
+4. Add launch checklist gates for SLO, rollback readiness, and operator QA signoff.

@@ -113,6 +113,8 @@ interface ParsedRunRepoIssue {
   issueNumber: number;
 }
 
+type RunActionName = "cancel" | "retry";
+
 function json(status: number, body: unknown): Response {
   return Response.json(body, { status });
 }
@@ -424,6 +426,27 @@ function parseRunId(pathname: string): string | null {
   }
 }
 
+interface RunActionPathParams {
+  runId: string;
+  action: RunActionName;
+}
+
+function parseRunActionPath(pathname: string): RunActionPathParams | null {
+  const match = pathname.match(/^\/v1\/runs\/([^/]+)\/(cancel|retry)$/);
+  if (!match) {
+    return null;
+  }
+
+  try {
+    return {
+      runId: decodeURIComponent(match[1]),
+      action: match[2] as RunActionName
+    };
+  } catch {
+    return null;
+  }
+}
+
 interface RunArtifactPathParams {
   runId: string;
   artifactId: string;
@@ -553,6 +576,71 @@ async function getRunById(env: Env, runId: string): Promise<RunWithRepoRow | nul
       .bind(runId)
       .first<RunWithRepoRow>()) ?? null
   );
+}
+
+async function cancelRunById(env: Env, runId: string): Promise<boolean> {
+  const canceledAt = nowIso();
+  const result = await env.DB.prepare(
+    `UPDATE runs
+     SET
+      status = CASE WHEN status IN ('queued', 'running') THEN 'canceled' ELSE status END,
+      current_station = CASE WHEN status IN ('queued', 'running') THEN NULL ELSE current_station END,
+      finished_at = CASE WHEN status IN ('queued', 'running') THEN ? ELSE finished_at END,
+      failure_reason = CASE WHEN status IN ('queued', 'running') THEN NULL ELSE failure_reason END
+     WHERE id = ?`
+  )
+    .bind(canceledAt, runId)
+    .run();
+
+  return getAffectedRowCount(result) > 0;
+}
+
+async function createRetryRunFromRun(
+  env: Env,
+  sourceRun: RunWithRepoRow
+): Promise<RunWithRepoRow | null> {
+  const runId = `run_${crypto.randomUUID()}`;
+  const createdAt = nowIso();
+  await env.DB.prepare(
+    `INSERT INTO runs (
+      id,
+      repo_id,
+      issue_number,
+      goal,
+      status,
+      current_station,
+      requestor,
+      base_branch,
+      work_branch,
+      pr_mode,
+      pr_url,
+      created_at,
+      started_at,
+      finished_at,
+      failure_reason
+     )
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  )
+    .bind(
+      runId,
+      sourceRun.repo_id,
+      sourceRun.issue_number,
+      sourceRun.goal,
+      "queued",
+      null,
+      sourceRun.requestor,
+      sourceRun.base_branch,
+      null,
+      sourceRun.pr_mode,
+      null,
+      createdAt,
+      null,
+      null,
+      null
+    )
+    .run();
+
+  return getRunById(env, runId);
 }
 
 interface ListRunsFilters {
@@ -1567,6 +1655,82 @@ async function handleGetRunArtifact(runId: string, artifactId: string, env: Env)
   }
 }
 
+async function handleCancelRun(runId: string, env: Env): Promise<Response> {
+  try {
+    const canceled = await cancelRunById(env, runId);
+    if (!canceled) {
+      return routeNotFound();
+    }
+
+    const run = await getRunById(env, runId);
+    if (!run) {
+      return routeNotFound();
+    }
+
+    return json(200, {
+      run: serializeRun(run)
+    });
+  } catch (error) {
+    logEvent("run.cancel.failed", {
+      runId,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return serverError("Failed to cancel run");
+  }
+}
+
+async function handleRetryRun(runId: string, env: Env, ctx?: ExecutionContext): Promise<Response> {
+  try {
+    const sourceRun = await getRunById(env, runId);
+    if (!sourceRun) {
+      return routeNotFound();
+    }
+
+    if (sourceRun.status !== "failed" && sourceRun.status !== "canceled") {
+      return badRequest("Only failed or canceled runs can be retried");
+    }
+
+    const retryRun = await createRetryRunFromRun(env, sourceRun);
+    if (!retryRun) {
+      return serverError("Failed to load retry run after insert");
+    }
+
+    try {
+      await enqueueRun(env, retryRun, ctx);
+    } catch (error) {
+      await setRunQueueFailureMarkerSafely(
+        env,
+        retryRun.id,
+        "retry",
+        "run.retry.queue_failure_marker.failed.after_enqueue_error"
+      );
+      logEvent("run.retry.enqueue.failed", {
+        sourceRunId: runId,
+        retryRunId: retryRun.id,
+        error: errorMessage(error)
+      });
+
+      const failedRetryRun = await getRunById(env, retryRun.id);
+      return json(503, {
+        error: "Failed to enqueue retry run",
+        retriedFromRunId: runId,
+        run: serializeRun(failedRetryRun ?? retryRun)
+      });
+    }
+
+    return json(202, {
+      run: serializeRun(retryRun),
+      retriedFromRunId: runId
+    });
+  } catch (error) {
+    logEvent("run.retry.failed", {
+      runId,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return serverError("Failed to retry run");
+  }
+}
+
 function routePublicRequest(method: string, pathname: string): Response | null {
   if (method === "GET" && pathname === "/healthz") {
     return json(200, {
@@ -1607,6 +1771,16 @@ async function routeV1Request(
 
   if (key === "GET /v1/runs") {
     return handleListRuns(url, env);
+  }
+
+  if (method === "POST") {
+    const runActionPath = parseRunActionPath(url.pathname);
+    if (runActionPath?.action === "cancel") {
+      return handleCancelRun(runActionPath.runId, env);
+    }
+    if (runActionPath?.action === "retry") {
+      return handleRetryRun(runActionPath.runId, env, ctx);
+    }
   }
 
   if (method === "GET") {

@@ -1025,6 +1025,28 @@ async function runWorkflowSkeleton(env: Env, runId: string, startStationIndex = 
   const normalizedStart = Math.max(0, Math.min(startStationIndex, STATION_NAMES.length));
 
   for (const station of STATION_NAMES.slice(normalizedStart)) {
+    const latestRun = await getRunForExecution(env, runId);
+    const latestStatus = latestRun ? parseRunStatus(latestRun.status) : null;
+    if (!latestRun) {
+      throw new Error(`Run missing during workflow execution: ${runId}`);
+    }
+
+    if (latestStatus === "canceled") {
+      logEvent("run.canceled.observed", {
+        runId,
+        station
+      });
+      return;
+    }
+
+    if (latestStatus && isTerminalRunStatus(latestStatus)) {
+      logEvent("run.terminal.observed", {
+        runId,
+        status: latestStatus
+      });
+      return;
+    }
+
     await executeStation(env, run, station, coderunnerAdapter, githubAdapter);
   }
 

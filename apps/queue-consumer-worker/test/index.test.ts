@@ -172,6 +172,66 @@ describe("queue-consumer worker", () => {
     });
   });
 
+  it("stops workflow when a run is canceled after a station succeeds", async () => {
+    const runVerifyTask = vi.fn(async () => ({
+      outcome: "succeeded",
+      summary: "verify should not run",
+      metadata: {
+        phase: "verify",
+        mode: "mock",
+        attempt: 1
+      }
+    }));
+
+    const { env, db } = createEnv({
+      runImplementTask: async () => {
+        const run = db.getRun("run_cancel_during_workflow");
+        if (run) {
+          run.status = "canceled";
+          run.current_station = null;
+          run.finished_at = new Date().toISOString();
+          run.failure_reason = null;
+        }
+
+        return {
+          outcome: "succeeded",
+          summary: "implement done before cancel",
+          externalRef: "job_cancel",
+          metadata: {
+            phase: "implement",
+            mode: "mock",
+            attempt: 1
+          }
+        };
+      },
+      runVerifyTask
+    });
+    db.seedRun({
+      id: "run_cancel_during_workflow",
+      status: "queued"
+    });
+
+    const message = createMessage(
+      "msg_cancel_during_workflow",
+      createBaseRunMessage("run_cancel_during_workflow")
+    );
+
+    await handleQueue(
+      {
+        messages: [message as unknown as Message<unknown>]
+      } as MessageBatch<unknown>,
+      env
+    );
+
+    expect(message.acked).toBe(true);
+    expect(runVerifyTask).not.toHaveBeenCalled();
+    expect(db.getRun("run_cancel_during_workflow")?.status).toBe("canceled");
+    expect(db.getStationExecution("run_cancel_during_workflow", "implement")?.status).toBe(
+      "succeeded"
+    );
+    expect(db.getStationExecution("run_cancel_during_workflow", "verify")).toBeUndefined();
+  });
+
   it("marks run failed when implement returns a terminal failure outcome", async () => {
     const adapter: CoderunnerAdapter = {
       runImplementTask: async () => ({
