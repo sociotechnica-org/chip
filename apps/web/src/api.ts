@@ -39,11 +39,7 @@ function buildHeaders(config: ApiConfig, extra: HeadersInit = {}): Headers {
   return headers;
 }
 
-async function requestJson<T>(
-  config: ApiConfig,
-  path: string,
-  init: RequestInit = {}
-): Promise<T> {
+async function requestJson<T>(config: ApiConfig, path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`${normalizeBaseUrl(config.baseUrl)}${path}`, init);
   const text = await response.text();
   const parsedBody = text ? safeJsonParse(text) : null;

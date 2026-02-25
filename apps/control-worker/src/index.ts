@@ -736,7 +736,11 @@ async function listArtifactSummariesByRunId(
   return result.results ?? [];
 }
 
-async function getArtifactByRunId(env: Env, runId: string, artifactId: string): Promise<ArtifactDetailRow | null> {
+async function getArtifactByRunId(
+  env: Env,
+  runId: string,
+  artifactId: string
+): Promise<ArtifactDetailRow | null> {
   return (
     (await env.DB.prepare(
       `SELECT id, run_id, type, storage, payload, created_at
@@ -1635,7 +1639,11 @@ async function handleGetRun(runId: string, env: Env): Promise<Response> {
   }
 }
 
-async function handleGetRunArtifact(runId: string, artifactId: string, env: Env): Promise<Response> {
+async function handleGetRunArtifact(
+  runId: string,
+  artifactId: string,
+  env: Env
+): Promise<Response> {
   try {
     const artifact = await getArtifactByRunId(env, runId, artifactId);
     if (!artifact) {

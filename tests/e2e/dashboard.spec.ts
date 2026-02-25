@@ -366,8 +366,8 @@ test("dashboard submits runs and inspects artifacts", async ({ page }) => {
 
   await expect(page.getByRole("button", { name: /run_100/i })).toBeVisible();
   await page.getByRole("button", { name: /run_100/i }).click();
-  await expect(page.getByText("run_100")).toBeVisible();
-  await expect(page.getByText("implement", { exact: true })).toBeVisible();
+  await expect(page.locator(".run-summary-grid")).toContainText("run_100");
+  await expect(page.locator(".station-list")).toContainText("implement");
 
   await page.getByRole("button", { name: /implement_summary/i }).click();
   await expect(page.locator(".artifact-viewer pre")).toContainText("Implemented issue #100");
@@ -385,7 +385,7 @@ test("dashboard submits runs and inspects artifacts", async ({ page }) => {
   await page.getByRole("button", { name: /run_100/i }).click();
   await page.getByRole("button", { name: "Cancel run" }).click();
   await expect(page.getByText("Run canceled: run_100")).toBeVisible();
-  await expect(page.getByText("canceled")).toBeVisible();
+  await expect(page.locator(".run-summary-grid")).toContainText("canceled");
 
   await page.getByRole("button", { name: "Retry run" }).click();
   await expect(page.getByText("Retry submitted: run_102")).toBeVisible();

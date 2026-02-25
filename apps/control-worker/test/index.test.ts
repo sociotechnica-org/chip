@@ -179,7 +179,11 @@ class MockD1Database {
     if (sql.includes("from artifacts") && sql.includes("where run_id = ? and id = ?")) {
       const runId = asString(params[0]);
       const artifactId = asString(params[1]);
-      return this.artifacts.find((artifact) => artifact.run_id === runId && artifact.id === artifactId) ?? null;
+      return (
+        this.artifacts.find(
+          (artifact) => artifact.run_id === runId && artifact.id === artifactId
+        ) ?? null
+      );
     }
 
     throw new Error(`Unsupported first SQL: ${sql}`);

@@ -437,7 +437,10 @@ export function App() {
               </label>
               <label>
                 Goal (optional)
-                <textarea value={goalInput} onChange={(event) => setGoalInput(event.target.value)} />
+                <textarea
+                  value={goalInput}
+                  onChange={(event) => setGoalInput(event.target.value)}
+                />
               </label>
               <label>
                 PR mode
@@ -504,12 +507,15 @@ export function App() {
                   </div>
                   <div>
                     <span className="label">Status</span>
-                    <span className={statusClassName(runDetail.run.status)}>{runDetail.run.status}</span>
+                    <span className={statusClassName(runDetail.run.status)}>
+                      {runDetail.run.status}
+                    </span>
                   </div>
                   <div>
                     <span className="label">Issue</span>
                     <strong>
-                      {runDetail.run.repo.owner}/{runDetail.run.repo.name}#{runDetail.run.issueNumber}
+                      {runDetail.run.repo.owner}/{runDetail.run.repo.name}#
+                      {runDetail.run.issueNumber}
                     </strong>
                   </div>
                   <div>
