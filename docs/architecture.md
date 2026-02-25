@@ -159,3 +159,4 @@ Implementations:
 5. PR5: GitHub adapter + PR station
 6. PR6: web dashboard
 7. PR7: hardening (retry/cancel/artifacts/tests)
+8. PR8: launch readiness (promotion/rollback runbooks, observability baseline, launch gates)

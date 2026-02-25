@@ -99,6 +99,7 @@ Production-complete additions:
 8. PR5: GitHub adapter + PR creation station.
 9. PR6: Vite web dashboard (runs list/detail/artifacts).
 10. PR7: Hardening (retries, cancel, R2 artifacts, test coverage uplift).
+11. PR8: Launch readiness (promotion/rollback runbooks, observability baseline, launch gates).
 
 ## 8. Current Implementation Status (as of 2026-02-25)
 
@@ -111,6 +112,7 @@ Completed slices:
 5. GitHub PR Creation (`create_pr` real behavior with idempotent retry handling).
 6. Web Dashboard v0 (authenticated run list/detail, artifact payload viewer, submit flow).
 7. Reliability Hardening v0 (cancel/retry endpoints, cancellation-aware workflow progression, added smoke/e2e coverage).
+8. Launch Readiness v0 (promotion/rollback runbooks, migration discipline, incident playbook, SLO/checklist gates).
 
 In-flight:
 
@@ -118,7 +120,7 @@ In-flight:
 
 Next slice:
 
-1. Launch-readiness phase work (staging/rollout plumbing + observability hardening).
+1. None (bootstrap launch-readiness slice completed).
 
 Historical mapping (legacy numeric labels):
 
@@ -129,6 +131,7 @@ Historical mapping (legacy numeric labels):
 5. Legacy PR5 -> GitHub PR Creation.
 6. Legacy PR6 -> Web Dashboard v0.
 7. Legacy PR7 -> Reliability Hardening.
+8. Legacy PR8 -> Launch Readiness v0.
 
 ## 9. Delivery Plan (Expanded Slice Sequence)
 
@@ -155,13 +158,13 @@ Historical mapping (legacy numeric labels):
 
 ### Phase C: Launch Readiness
 
-1. Observability + SLOs.
+1. Observability + SLOs: complete.
    - structured events, trace correlation, failure taxonomy
    - dashboards and alerts for run latency/failure/retry
-2. Staging and Production Rollout Plumbing.
+2. Staging and Production Rollout Plumbing: complete.
    - environment-specific Wrangler config and promotion flow
    - migration/runbook discipline and rollback procedure
-3. Production-Readiness Validation.
+3. Production-Readiness Validation: complete.
    - soak/load tests for queue and workflow throughput
    - fault-injection checks for provider/API failures
    - final launch checklist and go-live decision doc
@@ -226,13 +229,14 @@ Expected additions during production hardening:
 4. Platform has staging and production deployment playbooks with rollback.
 5. Alerting exists for queue backlog growth, workflow failures, and provider outages.
 
-## 13. Immediate Next Action (Launch Readiness Slice)
+## 13. Immediate Next Action
 
-Start Phase C launch-readiness work.
+Launch-readiness phase goals are complete for bootstrap scope.
 
-Launch-readiness slice goals:
+Completed artifacts:
 
-1. Define environment promotion flow and rollback runbook for staging -> production.
-2. Add baseline dashboards/alerts for queue depth, terminal failure rates, and retry spikes.
-3. Document migration discipline and incident-response playbook for run lifecycle failures.
-4. Add launch checklist gates for SLO, rollback readiness, and operator QA signoff.
+1. `docs/operations/environment-promotion.md`
+2. `docs/operations/observability-baseline.md`
+3. `docs/operations/migration-discipline.md`
+4. `docs/operations/incident-response-run-lifecycle.md`
+5. `docs/operations/launch-checklist.md`

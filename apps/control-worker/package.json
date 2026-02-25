@@ -8,6 +8,10 @@
   "scripts": {
     "dev": "wrangler dev",
     "dev:local": "wrangler dev --local --port 20287 --ip 127.0.0.1 --inspector-port 20830 --persist-to ../../.wrangler-state",
+    "migrate:staging": "wrangler d1 migrations apply DB --env staging --config wrangler.jsonc",
+    "migrate:production": "wrangler d1 migrations apply DB --env production --config wrangler.jsonc",
+    "deploy:staging": "wrangler deploy --env staging --config wrangler.jsonc",
+    "deploy:production": "wrangler deploy --env production --config wrangler.jsonc",
     "lint": "eslint src test --ext .ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run test/index.test.ts",

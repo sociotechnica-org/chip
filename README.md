@@ -57,6 +57,11 @@ bob-the-builder/
 - Bootstrap plan: `docs/plans/001-bootstrap-v0/001-bootstrap-v0.md`
 - PR1 implementation plan: `docs/plans/001-bootstrap-v0/pr1-implementation-plan.md`
 - Architecture: `docs/architecture.md`
+- Launch promotion runbook: `docs/operations/environment-promotion.md`
+- Observability baseline: `docs/operations/observability-baseline.md`
+- Migration discipline: `docs/operations/migration-discipline.md`
+- Incident response: `docs/operations/incident-response-run-lifecycle.md`
+- Launch checklist: `docs/operations/launch-checklist.md`
 
 ## PR1 Bootstrap Status
 
@@ -145,6 +150,16 @@ PR7 adds core operator-control hardening:
 - queue-consumer cancellation awareness to stop station progression after cancel is observed
 - additional unit/integration coverage for cancel/retry and artifact retrieval behavior
 
+## PR8 Launch Readiness Status
+
+PR8 delivers baseline launch-readiness controls:
+
+- staging/production Wrangler environment wiring for both workers
+- promotion + rollback runbook with explicit operator sequence
+- migration discipline and run-lifecycle incident-response playbooks
+- launch checklist gates for SLO, rollback readiness, and operator QA
+- typed observability baseline definitions in `@bob/observability`
+
 ## Getting Started
 
 Brand new local instance:
@@ -225,6 +240,15 @@ pnpm test:integration # smoke/integration tests only
 pnpm test:e2e         # web dashboard Playwright e2e (mocked API)
 pnpm test:e2e:issue-pr # full mocked issue->PR e2e (control + queue + GitHub mock)
 pnpm smoke            # all smoke suites
+```
+
+Promotion and rollback support commands:
+
+```bash
+pnpm migrate:staging
+pnpm deploy:staging
+pnpm migrate:production
+pnpm deploy:production
 ```
 
 Run the control worker locally:
