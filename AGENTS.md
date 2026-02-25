@@ -112,11 +112,11 @@ For implementation-plan execution work, use this loop until completion:
 
 ### Services overview
 
-| Service | Port | Command |
-|---|---|---|
-| control-worker | 20287 | `pnpm --filter @bob/control-worker dev:local` |
+| Service               | Port  | Command                                              |
+| --------------------- | ----- | ---------------------------------------------------- |
+| control-worker        | 20287 | `pnpm --filter @bob/control-worker dev:local`        |
 | queue-consumer-worker | 20288 | `pnpm --filter @bob/queue-consumer-worker dev:local` |
-| web | 6673 | `pnpm --filter @bob/web dev:local` |
+| web                   | 6673  | `pnpm --filter @bob/web dev:local`                   |
 
 Start all three together with `pnpm dev` (runs migrations first, then all services in parallel).
 
