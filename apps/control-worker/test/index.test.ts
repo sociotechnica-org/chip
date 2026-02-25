@@ -56,6 +56,7 @@ interface ArtifactRow {
   run_id: string;
   type: string;
   storage: string;
+  payload: string | null;
   created_at: string;
 }
 
@@ -173,6 +174,12 @@ class MockD1Database {
       }
 
       return this.withRepo(run);
+    }
+
+    if (sql.includes("from artifacts") && sql.includes("where run_id = ? and id = ?")) {
+      const runId = asString(params[0]);
+      const artifactId = asString(params[1]);
+      return this.artifacts.find((artifact) => artifact.run_id === runId && artifact.id === artifactId) ?? null;
     }
 
     throw new Error(`Unsupported first SQL: ${sql}`);
@@ -455,10 +462,14 @@ class MockD1Database {
     });
   }
 
-  public seedArtifact(runId: string, row: Omit<ArtifactRow, "run_id"> & { run_id?: string }): void {
+  public seedArtifact(
+    runId: string,
+    row: Omit<ArtifactRow, "run_id" | "payload"> & { run_id?: string; payload?: string | null }
+  ): void {
     this.artifacts.push({
       ...row,
-      run_id: row.run_id ?? runId
+      run_id: row.run_id ?? runId,
+      payload: row.payload ?? null
     });
   }
 
@@ -779,6 +790,73 @@ describe("control worker", () => {
       type: "workflow_summary",
       storage: "inline"
     });
+  });
+
+  it("returns artifact payloads on run artifact detail endpoint", async () => {
+    const { env, db } = createEnv();
+    await createRepo(env);
+
+    const createRunResponse = await handleRequest(
+      new Request("https://example.com/v1/runs", {
+        method: "POST",
+        headers: authHeaders({
+          "content-type": "application/json",
+          "idempotency-key": "artifact-detail-1"
+        }),
+        body: JSON.stringify({
+          repo: { owner: "sociotechnica-org", name: "lifebuild" },
+          issue: { number: 789 },
+          requestor: "jess",
+          prMode: "draft"
+        })
+      }),
+      env
+    );
+    expect(createRunResponse.status).toBe(202);
+    const createPayload = await parseJson(createRunResponse);
+    const run = createPayload.run as Record<string, unknown>;
+    const runId = run.id as string;
+    const artifactId = `artifact_${runId}_verify_summary`;
+
+    db.seedArtifact(runId, {
+      id: artifactId,
+      type: "verify_summary",
+      storage: "inline",
+      payload: JSON.stringify({
+        station: "verify",
+        summary: "All checks passed"
+      }),
+      created_at: new Date().toISOString()
+    });
+
+    const artifactResponse = await handleRequest(
+      new Request(`https://example.com/v1/runs/${runId}/artifacts/${artifactId}`, {
+        headers: authHeaders()
+      }),
+      env
+    );
+    expect(artifactResponse.status).toBe(200);
+    const artifactPayload = await parseJson(artifactResponse);
+    expect(artifactPayload).toMatchObject({
+      artifact: {
+        id: artifactId,
+        runId,
+        type: "verify_summary",
+        storage: "inline",
+        payload: {
+          station: "verify",
+          summary: "All checks passed"
+        }
+      }
+    });
+
+    const missingArtifactResponse = await handleRequest(
+      new Request(`https://example.com/v1/runs/${runId}/artifacts/missing`, {
+        headers: authHeaders()
+      }),
+      env
+    );
+    expect(missingArtifactResponse.status).toBe(404);
   });
 
   it("cleans up created run when idempotency key claim throws", async () => {

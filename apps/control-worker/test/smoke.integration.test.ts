@@ -385,5 +385,13 @@ describe("control worker integration", () => {
       stations: [],
       artifacts: []
     });
+
+    const getMissingArtifact = await requestJson(`/v1/runs/${runId}/artifacts/missing`, {
+      headers: authHeaders()
+    });
+    expect(getMissingArtifact.status).toBe(404);
+    expect(getMissingArtifact.body).toEqual({
+      error: "Not found"
+    });
   });
 });

@@ -77,6 +77,10 @@ interface ArtifactSummaryRow {
   created_at: string;
 }
 
+interface ArtifactDetailRow extends ArtifactSummaryRow {
+  payload: string | null;
+}
+
 interface IdempotencyRow {
   key: string;
   request_hash: string;
@@ -384,6 +388,29 @@ function serializeArtifactSummary(row: ArtifactSummaryRow): Record<string, unkno
   };
 }
 
+function parseArtifactPayload(row: ArtifactDetailRow): unknown {
+  if (row.storage !== "inline") {
+    return null;
+  }
+
+  if (row.payload === null) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(row.payload);
+  } catch {
+    return row.payload;
+  }
+}
+
+function serializeArtifactDetail(row: ArtifactDetailRow): Record<string, unknown> {
+  return {
+    ...serializeArtifactSummary(row),
+    payload: parseArtifactPayload(row)
+  };
+}
+
 function parseRunId(pathname: string): string | null {
   const match = pathname.match(/^\/v1\/runs\/([^/]+)$/);
   if (!match) {
@@ -392,6 +419,27 @@ function parseRunId(pathname: string): string | null {
 
   try {
     return decodeURIComponent(match[1]);
+  } catch {
+    return null;
+  }
+}
+
+interface RunArtifactPathParams {
+  runId: string;
+  artifactId: string;
+}
+
+function parseRunArtifactPath(pathname: string): RunArtifactPathParams | null {
+  const match = pathname.match(/^\/v1\/runs\/([^/]+)\/artifacts\/([^/]+)$/);
+  if (!match) {
+    return null;
+  }
+
+  try {
+    return {
+      runId: decodeURIComponent(match[1]),
+      artifactId: decodeURIComponent(match[2])
+    };
   } catch {
     return null;
   }
@@ -598,6 +646,19 @@ async function listArtifactSummariesByRunId(
     .all<ArtifactSummaryRow>();
 
   return result.results ?? [];
+}
+
+async function getArtifactByRunId(env: Env, runId: string, artifactId: string): Promise<ArtifactDetailRow | null> {
+  return (
+    (await env.DB.prepare(
+      `SELECT id, run_id, type, storage, payload, created_at
+       FROM artifacts
+       WHERE run_id = ? AND id = ?
+       LIMIT 1`
+    )
+      .bind(runId, artifactId)
+      .first<ArtifactDetailRow>()) ?? null
+  );
 }
 
 async function setRunQueueFailureMarker(env: Env, runId: string): Promise<void> {
@@ -1486,6 +1547,26 @@ async function handleGetRun(runId: string, env: Env): Promise<Response> {
   }
 }
 
+async function handleGetRunArtifact(runId: string, artifactId: string, env: Env): Promise<Response> {
+  try {
+    const artifact = await getArtifactByRunId(env, runId, artifactId);
+    if (!artifact) {
+      return routeNotFound();
+    }
+
+    return json(200, {
+      artifact: serializeArtifactDetail(artifact)
+    });
+  } catch (error) {
+    logEvent("run.artifact.get.failed", {
+      runId,
+      artifactId,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return serverError("Failed to load run artifact");
+  }
+}
+
 function routePublicRequest(method: string, pathname: string): Response | null {
   if (method === "GET" && pathname === "/healthz") {
     return json(200, {
@@ -1526,6 +1607,13 @@ async function routeV1Request(
 
   if (key === "GET /v1/runs") {
     return handleListRuns(url, env);
+  }
+
+  if (method === "GET") {
+    const artifactPath = parseRunArtifactPath(url.pathname);
+    if (artifactPath) {
+      return handleGetRunArtifact(artifactPath.runId, artifactPath.artifactId, env);
+    }
   }
 
   if (method !== "GET") {
