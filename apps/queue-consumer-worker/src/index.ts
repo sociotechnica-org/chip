@@ -1073,7 +1073,13 @@ async function runWorkflowSkeleton(env: Env, runId: string, startStationIndex = 
       return;
     }
 
-    const stationExecuted = await executeStation(env, run, station, coderunnerAdapter, githubAdapter);
+    const stationExecuted = await executeStation(
+      env,
+      run,
+      station,
+      coderunnerAdapter,
+      githubAdapter
+    );
     if (!stationExecuted) {
       return;
     }
