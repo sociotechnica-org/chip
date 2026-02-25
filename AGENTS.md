@@ -107,3 +107,33 @@ For implementation-plan execution work, use this loop until completion:
 2. Full auth/identity system (beyond shared password gate).
 3. Postgres or non-SQLite persistence.
 4. Tight coupling to a single coderunner implementation.
+
+## Cursor Cloud specific instructions
+
+### Services overview
+
+| Service | Port | Command |
+|---|---|---|
+| control-worker | 20287 | `pnpm --filter @bob/control-worker dev:local` |
+| queue-consumer-worker | 20288 | `pnpm --filter @bob/queue-consumer-worker dev:local` |
+| web | 6673 | `pnpm --filter @bob/web dev:local` |
+
+Start all three together with `pnpm dev` (runs migrations first, then all services in parallel).
+
+### Local dev vars
+
+Before starting services, create `.dev.vars` files from their `.example` templates:
+
+- `apps/control-worker/.dev.vars` — needs `BOB_PASSWORD`, `LOCAL_QUEUE_CONSUMER_URL`, `LOCAL_QUEUE_SHARED_SECRET`
+- `apps/queue-consumer-worker/.dev.vars` — needs `LOCAL_QUEUE_SHARED_SECRET` (must match control-worker), `CODERUNNER_MODE=mock`
+
+### Quality commands
+
+See `README.md` "Common quality commands" section. Key commands: `pnpm lint:check`, `pnpm test`, `pnpm smoke`.
+
+### Gotchas
+
+- pnpm install may warn about ignored build scripts for `esbuild`, `sharp`, `workerd`. These still work without running postinstall scripts in this environment; no action needed.
+- D1 migrations (`pnpm migrate`) are idempotent and must run before first `dev` or `test:integration` invocation. `pnpm dev` runs migrations automatically.
+- `pnpm reset` wipes all local D1 state (`.wrangler-state`) and re-runs setup — useful when schema changes across branches.
+- The queue-consumer runs in `CODERUNNER_MODE=mock` by default, which stubs out Sprites/Claude Code calls. Real adapter execution requires `SPRITE_TOKEN`, `SPRITE_NAME`, `CLAUDE_CODE_API_KEY` secrets.
