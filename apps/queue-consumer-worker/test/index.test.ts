@@ -1,4 +1,5 @@
 import { CoderunnerError } from "@bob/adapters-coderunner";
+import type { GitHubAdapter } from "@bob/adapters-github";
 import type { CoderunnerAdapter, CoderunnerTaskInput } from "@bob/core";
 import { describe, expect, it, vi } from "vitest";
 import { handleQueue, type Env } from "../src/index";
@@ -69,13 +70,30 @@ function createSuccessAdapter(): CoderunnerAdapter {
   };
 }
 
-function createEnv(adapter: CoderunnerAdapter): { env: Env; db: MockD1Database } {
+function createSuccessGitHubAdapter(): GitHubAdapter {
+  return {
+    createPullRequestForRun: async (input) => ({
+      workBranch: input.existingWorkBranch ?? `bob/${input.runId}`,
+      commitSha: `mockcommit-${input.runId}`,
+      prNumber: input.issueNumber,
+      prUrl: input.existingPrUrl ?? `https://github.example/pr/${input.issueNumber}`,
+      branchCreated: !input.existingWorkBranch,
+      prCreated: !input.existingPrUrl
+    })
+  };
+}
+
+function createEnv(
+  adapter: CoderunnerAdapter,
+  githubAdapter: GitHubAdapter = createSuccessGitHubAdapter()
+): { env: Env; db: MockD1Database } {
   const db = new MockD1Database();
   db.seedRepo();
   return {
     env: {
       DB: db as unknown as D1Database,
-      __TEST_CODERUNNER_ADAPTER__: adapter
+      __TEST_CODERUNNER_ADAPTER__: adapter,
+      __TEST_GITHUB_ADAPTER__: githubAdapter
     },
     db
   };
@@ -123,6 +141,8 @@ describe("queue-consumer worker", () => {
     expect(message.acked).toBe(true);
     expect(run?.status).toBe("succeeded");
     expect(run?.current_station).toBeNull();
+    expect(run?.work_branch).toBe("bob/run_success");
+    expect(run?.pr_url).toBe("https://github.example/pr/1");
 
     const implementStation = db.getStationExecution("run_success", "implement");
     const verifyStation = db.getStationExecution("run_success", "verify");
@@ -138,6 +158,7 @@ describe("queue-consumer worker", () => {
     expect(artifactTypes).toContain("verify_summary");
     expect(artifactTypes).toContain("implement_runner_logs_excerpt");
     expect(artifactTypes).toContain("verify_runner_logs_excerpt");
+    expect(artifactTypes).toContain("create_pr_metadata");
 
     const implementSummaryArtifact = db
       .listArtifacts("run_success")
@@ -554,6 +575,107 @@ describe("queue-consumer worker", () => {
     expect(db.getStationExecution("run_external_ref_resume", "implement")?.external_ref).toBe(
       "job_existing"
     );
+  });
+
+  it("resumes create_pr using persisted branch metadata after partial success", async () => {
+    const githubAdapter: GitHubAdapter = {
+      createPullRequestForRun: vi.fn(async (input) => {
+        expect(input.existingWorkBranch).toBe("bob/run_partial_create_pr");
+        return {
+          workBranch: input.existingWorkBranch ?? "bob/run_partial_create_pr",
+          commitSha: "sha_partial",
+          prNumber: 909,
+          prUrl: "https://github.example/pr/909",
+          branchCreated: false,
+          prCreated: true
+        };
+      })
+    };
+
+    const { env, db } = createEnv(createSuccessAdapter(), githubAdapter);
+    const staleAt = new Date(Date.now() - 90_000).toISOString();
+    db.seedRun({
+      id: "run_partial_create_pr",
+      status: "running",
+      current_station: "create_pr",
+      work_branch: "bob/run_partial_create_pr",
+      started_at: staleAt,
+      heartbeat_at: staleAt
+    });
+    db.seedStationExecution({
+      id: "station_run_partial_create_pr_intake",
+      run_id: "run_partial_create_pr",
+      station: "intake",
+      status: "succeeded",
+      started_at: staleAt,
+      finished_at: staleAt,
+      duration_ms: 100,
+      summary: "intake done",
+      external_ref: null,
+      metadata_json: null
+    });
+    db.seedStationExecution({
+      id: "station_run_partial_create_pr_plan",
+      run_id: "run_partial_create_pr",
+      station: "plan",
+      status: "succeeded",
+      started_at: staleAt,
+      finished_at: staleAt,
+      duration_ms: 100,
+      summary: "plan done",
+      external_ref: null,
+      metadata_json: null
+    });
+    db.seedStationExecution({
+      id: "station_run_partial_create_pr_implement",
+      run_id: "run_partial_create_pr",
+      station: "implement",
+      status: "succeeded",
+      started_at: staleAt,
+      finished_at: staleAt,
+      duration_ms: 100,
+      summary: "implement done",
+      external_ref: "job_impl",
+      metadata_json: JSON.stringify({
+        phase: "implement",
+        mode: "mock",
+        attempt: 1
+      })
+    });
+    db.seedStationExecution({
+      id: "station_run_partial_create_pr_verify",
+      run_id: "run_partial_create_pr",
+      station: "verify",
+      status: "succeeded",
+      started_at: staleAt,
+      finished_at: staleAt,
+      duration_ms: 100,
+      summary: "verify done",
+      external_ref: "job_verify",
+      metadata_json: JSON.stringify({
+        phase: "verify",
+        mode: "mock",
+        attempt: 1
+      })
+    });
+
+    const message = createMessage(
+      "msg_partial_create_pr",
+      createBaseRunMessage("run_partial_create_pr")
+    );
+
+    await handleQueue(
+      {
+        messages: [message as unknown as Message<unknown>]
+      } as MessageBatch<unknown>,
+      env
+    );
+
+    expect(message.acked).toBe(true);
+    expect(db.getRun("run_partial_create_pr")?.status).toBe("succeeded");
+    expect(db.getRun("run_partial_create_pr")?.work_branch).toBe("bob/run_partial_create_pr");
+    expect(db.getRun("run_partial_create_pr")?.pr_url).toBe("https://github.example/pr/909");
+    expect(githubAdapter.createPullRequestForRun).toHaveBeenCalledOnce();
   });
 
   it("persists running metadata and completes on resume", async () => {

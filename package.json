@@ -20,6 +20,7 @@
     "test:unit": "pnpm -r --if-present test",
     "test:integration": "pnpm -r --if-present test:integration",
     "test:e2e": "pnpm --filter @bob/web test:e2e",
+    "test:e2e:issue-pr": "pnpm --filter @bob/queue-consumer-worker test:e2e",
     "smoke:control-worker": "pnpm --filter @bob/control-worker test:integration",
     "smoke:queue-consumer-worker": "pnpm --filter @bob/queue-consumer-worker test:integration",
     "smoke": "pnpm smoke:control-worker && pnpm smoke:queue-consumer-worker",

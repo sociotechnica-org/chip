@@ -25,11 +25,15 @@
   },
   "vars": {
     "LOCAL_QUEUE_SHARED_SECRET": "",
+    "RUN_RESUME_STALE_MS": "",
     "CODERUNNER_MODE": "mock",
     "SPRITE_TOKEN": "",
     "SPRITE_NAME": "",
     "SPRITES_API_BASE_URL": "",
     "SPRITES_TIMEOUT_MS": "",
-    "CLAUDE_CODE_API_KEY": ""
+    "CLAUDE_CODE_API_KEY": "",
+    "GITHUB_ADAPTER_MODE": "mock",
+    "GITHUB_TOKEN": "",
+    "GITHUB_API_BASE_URL": ""
   }
 }
