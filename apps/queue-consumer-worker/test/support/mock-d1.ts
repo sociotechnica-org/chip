@@ -83,6 +83,8 @@ export class MockD1Database {
   private readonly stationExecutions: StationExecutionRow[] = [];
   private readonly artifacts: ArtifactRow[] = [];
   private readonly failArtifactTypes: Set<string> = new Set();
+  private readonly beforeRunCurrentStationUpdateHooks: Map<string, (station: string) => void> =
+    new Map();
 
   public prepare(sql: string): D1PreparedStatement {
     return new MockD1PreparedStatement(this, normalizeSql(sql)) as unknown as D1PreparedStatement;
@@ -154,6 +156,18 @@ export class MockD1Database {
 
   public failArtifactWriteForType(type: string): void {
     this.failArtifactTypes.add(type);
+  }
+
+  public setBeforeRunCurrentStationUpdate(
+    runId: string,
+    hook: ((station: string) => void) | null
+  ): void {
+    if (!hook) {
+      this.beforeRunCurrentStationUpdateHooks.delete(runId);
+      return;
+    }
+
+    this.beforeRunCurrentStationUpdateHooks.set(runId, hook);
   }
 
   public first(sql: string, params: unknown[]): unknown {
@@ -325,7 +339,13 @@ export class MockD1Database {
       sql.includes("heartbeat_at = ?") &&
       sql.includes("where id = ? and status = ?")
     ) {
+      const station = asString(params[0]);
       const runId = asString(params[2]);
+      const beforeUpdateHook = this.beforeRunCurrentStationUpdateHooks.get(runId);
+      if (beforeUpdateHook) {
+        beforeUpdateHook(station);
+      }
+
       const expectedStatus = asString(params[3]);
       const run = this.runs.find((candidate) => candidate.id === runId);
       if (!run || run.status !== expectedStatus) {

@@ -44,3 +44,38 @@ Run the worker locally:
 ```bash
 pnpm --filter @bob/control-worker dev --local
 ```
+
+## Environment Promotion Plumbing (PR8)
+
+Both worker configs now define explicit Wrangler environments:
+
+1. `staging`
+2. `production`
+
+Environment-specific deploy scripts:
+
+```bash
+pnpm deploy:staging
+pnpm deploy:production
+```
+
+Control-worker migration scripts:
+
+```bash
+pnpm migrate:staging
+pnpm migrate:production
+```
+
+Promotion sequence:
+
+1. run `pnpm migrate:staging`
+2. run `pnpm deploy:staging`
+3. verify staging canary + smoke coverage
+4. run `pnpm migrate:production`
+5. run `pnpm deploy:production`
+6. monitor baseline alerts during post-deploy window
+
+See detailed procedures in:
+
+- `docs/operations/environment-promotion.md`
+- `docs/operations/migration-discipline.md`

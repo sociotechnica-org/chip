@@ -362,17 +362,42 @@ describe("control worker integration", () => {
       }
     });
 
+    const cancelRun = await requestJson(`/v1/runs/${runId}/cancel`, {
+      method: "POST",
+      headers: authHeaders()
+    });
+    expect(cancelRun.status).toBe(200);
+    expect(cancelRun.body).toMatchObject({
+      run: {
+        id: runId,
+        status: "canceled"
+      }
+    });
+
+    const retryRun = await requestJson(`/v1/runs/${runId}/retry`, {
+      method: "POST",
+      headers: authHeaders()
+    });
+    expect(retryRun.status).toBe(202);
+    expect(retryRun.body).toMatchObject({
+      retriedFromRunId: runId,
+      run: {
+        status: "queued"
+      }
+    });
+    const retryRunBody = retryRun.body as Record<string, unknown>;
+    const retryRunPayload = retryRunBody.run as Record<string, unknown>;
+    const retryRunId = retryRunPayload.id as string;
+    expect(typeof retryRunId).toBe("string");
+
     const listRuns = await requestJson("/v1/runs", {
       headers: authHeaders()
     });
     expect(listRuns.status).toBe(200);
-    expect(listRuns.body).toMatchObject({
-      runs: [
-        {
-          id: runId
-        }
-      ]
-    });
+    const listRunsBody = listRuns.body as { runs: Array<{ id: string }> };
+    const listedRuns = listRunsBody.runs.map((item) => item.id);
+    expect(listedRuns).toContain(runId);
+    expect(listedRuns).toContain(retryRunId);
 
     const getRun = await requestJson(`/v1/runs/${runId}`, {
       headers: authHeaders()
@@ -384,6 +409,27 @@ describe("control worker integration", () => {
       },
       stations: [],
       artifacts: []
+    });
+
+    const getRetryRun = await requestJson(`/v1/runs/${retryRunId}`, {
+      headers: authHeaders()
+    });
+    expect(getRetryRun.status).toBe(200);
+    expect(getRetryRun.body).toMatchObject({
+      run: {
+        id: retryRunId,
+        status: "queued"
+      },
+      stations: [],
+      artifacts: []
+    });
+
+    const getMissingArtifact = await requestJson(`/v1/runs/${runId}/artifacts/missing`, {
+      headers: authHeaders()
+    });
+    expect(getMissingArtifact.status).toBe(404);
+    expect(getMissingArtifact.body).toEqual({
+      error: "Not found"
     });
   });
 });

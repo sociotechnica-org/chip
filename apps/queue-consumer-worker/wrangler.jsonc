@@ -23,6 +23,70 @@
     "enabled": true,
     "head_sampling_rate": 1
   },
+  "env": {
+    "staging": {
+      "name": "bob-queue-consumer-worker-staging",
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "bob-control-worker-staging",
+          "database_id": "11111111-1111-1111-1111-111111111111",
+          "migrations_dir": "../control-worker/migrations"
+        }
+      ],
+      "queues": {
+        "consumers": [
+          {
+            "queue": "bob-runs-staging",
+            "max_retries": 100
+          }
+        ]
+      },
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1
+      },
+      "vars": {
+        "RUN_RESUME_STALE_MS": "",
+        "CODERUNNER_MODE": "sprites",
+        "SPRITES_API_BASE_URL": "",
+        "SPRITES_TIMEOUT_MS": "",
+        "GITHUB_ADAPTER_MODE": "github",
+        "GITHUB_API_BASE_URL": ""
+      }
+    },
+    "production": {
+      "name": "bob-queue-consumer-worker-production",
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "bob-control-worker-production",
+          "database_id": "22222222-2222-2222-2222-222222222222",
+          "migrations_dir": "../control-worker/migrations"
+        }
+      ],
+      "queues": {
+        "consumers": [
+          {
+            "queue": "bob-runs-production",
+            "max_retries": 100
+          }
+        ]
+      },
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1
+      },
+      "vars": {
+        "RUN_RESUME_STALE_MS": "",
+        "CODERUNNER_MODE": "sprites",
+        "SPRITES_API_BASE_URL": "",
+        "SPRITES_TIMEOUT_MS": "",
+        "GITHUB_ADAPTER_MODE": "github",
+        "GITHUB_API_BASE_URL": ""
+      }
+    }
+  },
   "vars": {
     "LOCAL_QUEUE_SHARED_SECRET": "",
     "RUN_RESUME_STALE_MS": "",

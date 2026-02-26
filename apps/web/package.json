@@ -11,7 +11,7 @@
     "lint": "eslint src vite.config.ts --ext .ts,.tsx",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
     "test": "vitest run --passWithNoTests",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test -c ../../playwright.config.ts"
   },
   "dependencies": {
     "react": "^19.0.0",

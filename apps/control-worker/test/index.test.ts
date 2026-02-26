@@ -56,6 +56,7 @@ interface ArtifactRow {
   run_id: string;
   type: string;
   storage: string;
+  payload: string | null;
   created_at: string;
 }
 
@@ -173,6 +174,16 @@ class MockD1Database {
       }
 
       return this.withRepo(run);
+    }
+
+    if (sql.includes("from artifacts") && sql.includes("where run_id = ? and id = ?")) {
+      const runId = asString(params[0]);
+      const artifactId = asString(params[1]);
+      return (
+        this.artifacts.find(
+          (artifact) => artifact.run_id === runId && artifact.id === artifactId
+        ) ?? null
+      );
     }
 
     throw new Error(`Unsupported first SQL: ${sql}`);
@@ -341,6 +352,26 @@ class MockD1Database {
         return 1;
       }
 
+      if (
+        sql.includes(
+          "status = case when status in ('queued', 'running') then 'canceled' else status end"
+        ) &&
+        sql.includes("current_station = case when status in ('queued', 'running') then null")
+      ) {
+        const run = this.runs.find((row) => row.id === asString(params[1]));
+        if (!run) {
+          return 0;
+        }
+
+        if (run.status === "queued" || run.status === "running") {
+          run.status = "canceled";
+          run.current_station = null;
+          run.finished_at = asNullableString(params[0]);
+          run.failure_reason = null;
+        }
+        return 1;
+      }
+
       throw new Error(`Unsupported runs update SQL: ${sql}`);
     }
 
@@ -455,10 +486,14 @@ class MockD1Database {
     });
   }
 
-  public seedArtifact(runId: string, row: Omit<ArtifactRow, "run_id"> & { run_id?: string }): void {
+  public seedArtifact(
+    runId: string,
+    row: Omit<ArtifactRow, "run_id" | "payload"> & { run_id?: string; payload?: string | null }
+  ): void {
     this.artifacts.push({
       ...row,
-      run_id: row.run_id ?? runId
+      run_id: row.run_id ?? runId,
+      payload: row.payload ?? null
     });
   }
 
@@ -779,6 +814,214 @@ describe("control worker", () => {
       type: "workflow_summary",
       storage: "inline"
     });
+  });
+
+  it("returns artifact payloads on run artifact detail endpoint", async () => {
+    const { env, db } = createEnv();
+    await createRepo(env);
+
+    const createRunResponse = await handleRequest(
+      new Request("https://example.com/v1/runs", {
+        method: "POST",
+        headers: authHeaders({
+          "content-type": "application/json",
+          "idempotency-key": "artifact-detail-1"
+        }),
+        body: JSON.stringify({
+          repo: { owner: "sociotechnica-org", name: "lifebuild" },
+          issue: { number: 789 },
+          requestor: "jess",
+          prMode: "draft"
+        })
+      }),
+      env
+    );
+    expect(createRunResponse.status).toBe(202);
+    const createPayload = await parseJson(createRunResponse);
+    const run = createPayload.run as Record<string, unknown>;
+    const runId = run.id as string;
+    const artifactId = `artifact_${runId}_verify_summary`;
+
+    db.seedArtifact(runId, {
+      id: artifactId,
+      type: "verify_summary",
+      storage: "inline",
+      payload: JSON.stringify({
+        station: "verify",
+        summary: "All checks passed"
+      }),
+      created_at: new Date().toISOString()
+    });
+
+    const artifactResponse = await handleRequest(
+      new Request(`https://example.com/v1/runs/${runId}/artifacts/${artifactId}`, {
+        headers: authHeaders()
+      }),
+      env
+    );
+    expect(artifactResponse.status).toBe(200);
+    const artifactPayload = await parseJson(artifactResponse);
+    expect(artifactPayload).toMatchObject({
+      artifact: {
+        id: artifactId,
+        runId,
+        type: "verify_summary",
+        storage: "inline",
+        payload: {
+          station: "verify",
+          summary: "All checks passed"
+        }
+      }
+    });
+
+    const missingArtifactResponse = await handleRequest(
+      new Request(`https://example.com/v1/runs/${runId}/artifacts/missing`, {
+        headers: authHeaders()
+      }),
+      env
+    );
+    expect(missingArtifactResponse.status).toBe(404);
+  });
+
+  it("cancels queued runs and keeps cancel idempotent", async () => {
+    const { env } = createEnv();
+    await createRepo(env);
+
+    const createRunResponse = await handleRequest(
+      new Request("https://example.com/v1/runs", {
+        method: "POST",
+        headers: authHeaders({
+          "content-type": "application/json",
+          "idempotency-key": "cancel-run-1"
+        }),
+        body: JSON.stringify({
+          repo: { owner: "sociotechnica-org", name: "lifebuild" },
+          issue: { number: 990 },
+          requestor: "jess",
+          prMode: "draft"
+        })
+      }),
+      env
+    );
+    expect(createRunResponse.status).toBe(202);
+    const createRunPayload = await parseJson(createRunResponse);
+    const run = createRunPayload.run as Record<string, unknown>;
+    const runId = run.id as string;
+
+    const cancelResponse = await handleRequest(
+      new Request(`https://example.com/v1/runs/${runId}/cancel`, {
+        method: "POST",
+        headers: authHeaders()
+      }),
+      env
+    );
+    expect(cancelResponse.status).toBe(200);
+    await expect(cancelResponse.json()).resolves.toMatchObject({
+      run: {
+        id: runId,
+        status: "canceled"
+      }
+    });
+
+    const secondCancelResponse = await handleRequest(
+      new Request(`https://example.com/v1/runs/${runId}/cancel`, {
+        method: "POST",
+        headers: authHeaders()
+      }),
+      env
+    );
+    expect(secondCancelResponse.status).toBe(200);
+    await expect(secondCancelResponse.json()).resolves.toMatchObject({
+      run: {
+        id: runId,
+        status: "canceled"
+      }
+    });
+  });
+
+  it("retries terminal runs by creating a new queued run", async () => {
+    const { env, queue } = createEnv();
+    await createRepo(env);
+
+    const createRunResponse = await handleRequest(
+      new Request("https://example.com/v1/runs", {
+        method: "POST",
+        headers: authHeaders({
+          "content-type": "application/json",
+          "idempotency-key": "retry-run-source"
+        }),
+        body: JSON.stringify({
+          repo: { owner: "sociotechnica-org", name: "lifebuild" },
+          issue: { number: 991 },
+          requestor: "jess",
+          prMode: "draft"
+        })
+      }),
+      env
+    );
+    expect(createRunResponse.status).toBe(202);
+    const createRunPayload = await parseJson(createRunResponse);
+    const sourceRun = createRunPayload.run as Record<string, unknown>;
+    const sourceRunId = sourceRun.id as string;
+
+    const cancelResponse = await handleRequest(
+      new Request(`https://example.com/v1/runs/${sourceRunId}/cancel`, {
+        method: "POST",
+        headers: authHeaders()
+      }),
+      env
+    );
+    expect(cancelResponse.status).toBe(200);
+
+    const retryResponse = await handleRequest(
+      new Request(`https://example.com/v1/runs/${sourceRunId}/retry`, {
+        method: "POST",
+        headers: authHeaders()
+      }),
+      env
+    );
+    expect(retryResponse.status).toBe(202);
+    const retryPayload = await parseJson(retryResponse);
+    const retriedRun = retryPayload.run as Record<string, unknown>;
+    expect(retryPayload.retriedFromRunId).toBe(sourceRunId);
+    expect(retriedRun.id).not.toBe(sourceRunId);
+    expect(retriedRun.status).toBe("queued");
+    expect(queue.messages).toHaveLength(2);
+  });
+
+  it("rejects retry for non-terminal runs", async () => {
+    const { env } = createEnv();
+    await createRepo(env);
+
+    const createRunResponse = await handleRequest(
+      new Request("https://example.com/v1/runs", {
+        method: "POST",
+        headers: authHeaders({
+          "content-type": "application/json",
+          "idempotency-key": "retry-run-non-terminal"
+        }),
+        body: JSON.stringify({
+          repo: { owner: "sociotechnica-org", name: "lifebuild" },
+          issue: { number: 992 },
+          requestor: "jess",
+          prMode: "draft"
+        })
+      }),
+      env
+    );
+    expect(createRunResponse.status).toBe(202);
+    const createRunPayload = await parseJson(createRunResponse);
+    const sourceRun = createRunPayload.run as Record<string, unknown>;
+    const sourceRunId = sourceRun.id as string;
+
+    const retryResponse = await handleRequest(
+      new Request(`https://example.com/v1/runs/${sourceRunId}/retry`, {
+        method: "POST",
+        headers: authHeaders()
+      }),
+      env
+    );
+    expect(retryResponse.status).toBe(400);
   });
 
   it("cleans up created run when idempotency key claim throws", async () => {

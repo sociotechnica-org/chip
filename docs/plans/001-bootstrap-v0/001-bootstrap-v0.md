@@ -99,8 +99,9 @@ Production-complete additions:
 8. PR5: GitHub adapter + PR creation station.
 9. PR6: Vite web dashboard (runs list/detail/artifacts).
 10. PR7: Hardening (retries, cancel, R2 artifacts, test coverage uplift).
+11. PR8: Launch readiness (promotion/rollback runbooks, observability baseline, launch gates).
 
-## 8. Current Implementation Status (as of 2026-02-24)
+## 8. Current Implementation Status (as of 2026-02-25)
 
 Completed slices:
 
@@ -109,6 +110,9 @@ Completed slices:
 3. Execution Orchestration Skeleton (queue consumer + workflow station persistence).
 4. Adapter-Driven Execution (`implement`/`verify` via Sprites + coderunner adapters).
 5. GitHub PR Creation (`create_pr` real behavior with idempotent retry handling).
+6. Web Dashboard v0 (authenticated run list/detail, artifact payload viewer, submit flow).
+7. Reliability Hardening v0 (cancel/retry endpoints, cancellation-aware workflow progression, added smoke/e2e coverage).
+8. Launch Readiness v0 (promotion/rollback runbooks, migration discipline, incident playbook, SLO/checklist gates).
 
 In-flight:
 
@@ -116,7 +120,7 @@ In-flight:
 
 Next slice:
 
-1. Web Dashboard v0 (runs list/detail/artifacts/logs).
+1. None (bootstrap launch-readiness slice completed).
 
 Historical mapping (legacy numeric labels):
 
@@ -127,6 +131,7 @@ Historical mapping (legacy numeric labels):
 5. Legacy PR5 -> GitHub PR Creation.
 6. Legacy PR6 -> Web Dashboard v0.
 7. Legacy PR7 -> Reliability Hardening.
+8. Legacy PR8 -> Launch Readiness v0.
 
 ## 9. Delivery Plan (Expanded Slice Sequence)
 
@@ -134,7 +139,7 @@ Historical mapping (legacy numeric labels):
 
 1. Adapter-Driven Execution: complete.
 2. GitHub PR Creation: complete.
-3. Web Dashboard v0: next active slice (run list, run detail timeline, artifact/log viewer).
+3. Web Dashboard v0: complete.
 
 ### Phase B: Production Hardening
 
@@ -153,13 +158,13 @@ Historical mapping (legacy numeric labels):
 
 ### Phase C: Launch Readiness
 
-1. Observability + SLOs.
+1. Observability + SLOs: complete.
    - structured events, trace correlation, failure taxonomy
    - dashboards and alerts for run latency/failure/retry
-2. Staging and Production Rollout Plumbing.
+2. Staging and Production Rollout Plumbing: complete.
    - environment-specific Wrangler config and promotion flow
    - migration/runbook discipline and rollback procedure
-3. Production-Readiness Validation.
+3. Production-Readiness Validation: complete.
    - soak/load tests for queue and workflow throughput
    - fault-injection checks for provider/API failures
    - final launch checklist and go-live decision doc
@@ -224,14 +229,14 @@ Expected additions during production hardening:
 4. Platform has staging and production deployment playbooks with rollback.
 5. Alerting exists for queue backlog growth, workflow failures, and provider outages.
 
-## 13. Immediate Next Action (Web Dashboard v0 Slice)
+## 13. Immediate Next Action
 
-Start Web Dashboard v0 immediately.
+Launch-readiness phase goals are complete for bootstrap scope.
 
-Web Dashboard v0 slice goals:
+Completed artifacts:
 
-1. Build authenticated run list and run detail views in `apps/web`.
-2. Show station timeline and create_pr metadata/artifact summaries.
-3. Add artifact/log viewer primitives and empty/error/loading states.
-4. Add end-to-end coverage for dashboard + API integration in CI-safe mode.
-5. Add local operator QA flow for submitting a run and tracking it to terminal state in the UI.
+1. `docs/operations/environment-promotion.md`
+2. `docs/operations/observability-baseline.md`
+3. `docs/operations/migration-discipline.md`
+4. `docs/operations/incident-response-run-lifecycle.md`
+5. `docs/operations/launch-checklist.md`
