@@ -48,10 +48,10 @@
       },
       "vars": {
         "RUN_RESUME_STALE_MS": "",
-        "CODERUNNER_MODE": "mock",
+        "CODERUNNER_MODE": "sprites",
         "SPRITES_API_BASE_URL": "",
         "SPRITES_TIMEOUT_MS": "",
-        "GITHUB_ADAPTER_MODE": "mock",
+        "GITHUB_ADAPTER_MODE": "github",
         "GITHUB_API_BASE_URL": ""
       }
     },
@@ -79,10 +79,10 @@
       },
       "vars": {
         "RUN_RESUME_STALE_MS": "",
-        "CODERUNNER_MODE": "mock",
+        "CODERUNNER_MODE": "sprites",
         "SPRITES_API_BASE_URL": "",
         "SPRITES_TIMEOUT_MS": "",
-        "GITHUB_ADAPTER_MODE": "mock",
+        "GITHUB_ADAPTER_MODE": "github",
         "GITHUB_API_BASE_URL": ""
       }
     }
