@@ -240,3 +240,24 @@ Completed artifacts:
 3. `docs/operations/migration-discipline.md`
 4. `docs/operations/incident-response-run-lifecycle.md`
 5. `docs/operations/launch-checklist.md`
+
+## 14. Cloudflare Queues Update Tracker (2026-03-02)
+
+Dependency/tooling status checked on 2026-03-02:
+
+1. `wrangler` updated to `^4.69.0`.
+2. `@cloudflare/workers-types` updated to `^4.20260305.0` (aligned with current Wrangler peer requirement).
+3. No standalone "Cloudflare Queues SDK" package is used in this repo; queue behavior is provided by Workers runtime + Wrangler bindings.
+
+Queues feature changes reviewed from Cloudflare changelog:
+
+1. Queue pause/resume + purge operations are available via Wrangler, REST API, and dashboard (Mar 27, 2025): `https://developers.cloudflare.com/changelog/2025-03-27-queues-pause-purge/`.
+2. Pull-consumer limits were increased significantly (Apr 17, 2025): `https://developers.cloudflare.com/changelog/2025-04-17-queues-pull-consumers-increased-limits/`.
+3. HTTP publish to Queues became available (May 09, 2025): `https://developers.cloudflare.com/changelog/2025-05-09-http-publish-for-queues/`.
+4. Queues is now available on Workers Free plan with 24-hour retention on free tier (Feb 04, 2026): `https://developers.cloudflare.com/changelog/2026-02-04-queues-available-on-workers-free-plan/`.
+
+Integration decision for bootstrap v0 plan:
+
+1. Keep current push-consumer architecture (`control-worker -> RUN_QUEUE -> queue-consumer-worker`) unchanged for v0.
+2. Add pause/purge runbook usage as an operator incident control during backlog/consumer-failure events (operationally relevant now).
+3. Defer pull-consumer and HTTP-publish adoption to post-v0 because they do not improve the current single-pipeline control plane path.
